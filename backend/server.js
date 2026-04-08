@@ -70,7 +70,7 @@ function buildPrompt(compactScreen) {
 You are an AI accessibility reviewer for Figma screens.
 
 Your task is to inspect the provided screen structure and identify likely accessibility issues.
-Be useful but not overly strict. Focus on plausible design-level accessibility concerns.
+Be useful but not overly strict. Focus on plausible design-level accessibility concerns grounded in the provided screen data.
 
 Return ONLY valid JSON with this exact schema:
 {
@@ -93,11 +93,24 @@ Return ONLY valid JSON with this exact schema:
 
 Guidelines:
 - You are reviewing a design mockup, not live code.
-- Consider issues such as very small text, weak hierarchy, unclear labels, probable contrast concerns based on colors, and touch targets that appear too small.
+- Focus on issues such as very small text, weak hierarchy, unclear labels, likely color contrast problems, and touch targets that appear too small.
+- Base every issue on evidence visible in the provided data.
 - Do not invent technical details you cannot infer.
-- If evidence is weak, phrase the issue as a likely concern.
 - Return at most 6 issues.
 - If there are no clear issues, return an empty issues array and a short overall assessment.
+
+Contrast-specific guidance:
+- When solid hex colors are available for text and its likely background, treat contrast as a stronger and more reliable signal.
+- If the foreground and background hex colors appear very similar, you may state the contrast concern more confidently.
+- If the available hex values strongly suggest low contrast, explain that the issue is based on the provided color values rather than a visual guess.
+- If the background color is unclear, missing, layered, or cannot be reasonably inferred, use more cautious wording such as “may have low contrast” or “contrast is difficult to verify from the available design data.”
+- Do not claim exact WCAG compliance or failure unless the provided data makes that judgment reasonably supportable.
+- Prefer grounded contrast judgments from provided hex values over vague visual speculation.
+
+Uncertainty guidance:
+- Be confident when the data is strong.
+- Be cautious when the data is incomplete.
+- If evidence is weak, phrase the issue as a likely concern rather than a definite problem.
 
 Screen data:
 ${JSON.stringify(compactScreen, null, 2)}
