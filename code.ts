@@ -1,4 +1,4 @@
-figma.showUI(__html__, { width: 420, height: 700 });
+figma.showUI(__html__, { width: 420, height: 900 });
 
 type ExtractedNode = {
 	id: string;
@@ -222,7 +222,6 @@ figma.ui.onmessage = async (msg) => {
 	}
 
 	if (msg.type === "set-demand-mode") {
-		console.log("SET DEMAND MODE HIT:", msg.mode);
 		const newMode = msg.mode as DemandMode;
 		const previousMode = await getDemandMode();
 		const userId = await getOrCreateUserId();
@@ -236,7 +235,11 @@ figma.ui.onmessage = async (msg) => {
 		}
 
 		await setDemandMode(newMode);
-		await sendSelectionToUI();
+
+		figma.ui.postMessage({
+			type: "demand-mode",
+			payload: { mode: newMode },
+		});
 
 		try {
 			await fetch("http://localhost:3001/log", {

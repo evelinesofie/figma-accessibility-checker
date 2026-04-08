@@ -25,6 +25,68 @@
       margin-bottom: 12px;
     }
 
+    .settings-anchor {
+      position: relative;
+    }
+
+    .icon-button {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: #666;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+
+    .icon-button:hover {
+      background: #f3f3f3;
+      color: #222;
+    }
+
+    .icon-button:focus-visible {
+      outline: 2px solid #bcd3ff;
+      outline-offset: 2px;
+    }
+
+    .settings-popup {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 170px;
+      background: #fff;
+      border: 1px solid #e8e8e8;
+      border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+      padding: 10px;
+      z-index: 20;
+    }
+
+    .settings-title {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    .settings-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 2px;
+      cursor: pointer;
+    }
+
+    .settings-option input {
+      margin: 0;
+    }
+
+    .hidden {
+      display: none;
+    }
+
     .row {
       display: flex;
       gap: 8px;
@@ -150,19 +212,32 @@
 <body>
   <div class="topbar">
     <h1>AI Accessibility Checker</h1>
-    <button id="settings-button" class="icon-button" title="Settings">⚙️</button>
-  </div>
 
-  <div id="settings-panel" class="settings-panel hidden">
-    <div><strong>Explanation mode</strong></div>
-    <label class="settings-option">
-      <input type="radio" name="demand-mode" value="always" />
-      Always
-    </label>
-    <label class="settings-option">
-      <input type="radio" name="demand-mode" value="on_demand" />
-      On-demand
-    </label>
+    <div class="settings-anchor">
+      <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.36.2.78.31 1.2.31H21a2 2 0 1 1 0 4h-.09c-.42 0-.84.11-1.2.31z">
+          </path>
+        </svg>
+      </button>
+
+      <div id="settings-panel" class="settings-popup hidden">
+        <div class="settings-title">Explanation mode</div>
+
+        <label class="settings-option">
+          <input type="radio" name="demand-mode" value="always" />
+          <span>Always</span>
+        </label>
+
+        <label class="settings-option">
+          <input type="radio" name="demand-mode" value="on_demand" />
+          <span>On-demand</span>
+        </label>
+      </div>
+    </div>
   </div>
 
   <div class="row">
@@ -296,13 +371,11 @@
             <span class="muted">Node: ${escapeHtml(issue.node_name || "Unknown")}</span><br>
             <span class="severity">${escapeHtml(issue.severity || "unknown")}</span>
 
-            ${currentDemandMode === "on_demand" ? `
-              <div class="issue-actions">
-                <button class="toggle-explanation-btn" data-issue-index="${index}">
-                  Show Explanation
-                </button>
-              </div>
-            ` : ""}
+            <div class="issue-actions ${currentDemandMode === "always" ? "hidden" : ""}">
+              <button class="toggle-explanation-btn" data-issue-index="${index}">
+                Show Explanation
+              </button>
+            </div>
 
             <div class="issue-details ${currentDemandMode === "always" ? "" : "hidden"}" id="issue-details-${index}">
               <p>${escapeHtml(issue.explanation || "")}</p>
@@ -316,6 +389,12 @@
       if (currentDemandMode === "on_demand") {
         attachExplanationHandlers();
       }
+    }
+
+    function syncModeInputs() {
+      modeInputs.forEach((input) => {
+        input.checked = input.value === currentDemandMode;
+      });
     }
 
     function attachExplanationHandlers() {
@@ -365,22 +444,47 @@
 
     function applyDemandModeToInterface() {
       updateSessionLabel();
-      if (latestResults) {
-        renderResults(latestResults);
+      updateExplanationVisibilityInPlace();
+    }
+
+    function updateExplanationVisibilityInPlace() {
+      const detailBlocks = document.querySelectorAll(".issue-details");
+      const actionBlocks = document.querySelectorAll(".issue-actions");
+
+      detailBlocks.forEach((details) => {
+        if (currentDemandMode === "always") {
+          details.classList.remove("hidden");
+        } else {
+          details.classList.add("hidden");
+        }
+      });
+
+      actionBlocks.forEach((actions) => {
+        if (currentDemandMode === "always") {
+          actions.classList.add("hidden");
+        } else {
+          actions.classList.remove("hidden");
+        }
+      });
+
+      if (currentDemandMode === "on_demand") {
+        attachExplanationHandlers();
       }
     }
 
-    settingsButton.onclick = () => {
+    settingsButton.onclick = (event) => {
+      event.stopPropagation();
+      syncModeInputs();
       settingsPanel.classList.toggle("hidden");
     };
 
     modeInputs.forEach((input) => {
-      input.addEventListener("click", () => {
-        console.log("RADIO CHANGED", input.value, input.checked);
-
+      input.addEventListener("change", (event) => {
+        event.stopPropagation();
         if (!input.checked) return;
 
-        statusEl.textContent = `Sending mode change: ${input.value}`;
+        currentDemandMode = input.value;
+        syncModeInputs();
 
         parent.postMessage(
           {
@@ -435,6 +539,19 @@
         parent.postMessage({ pluginMessage: { type: "close" } }, "*");
       }, 100);
     };
+
+    settingsButton.onclick = (event) => {
+      event.stopPropagation();
+      settingsPanel.classList.toggle("hidden");
+    };
+
+    settingsPanel.onclick = (event) => {
+      event.stopPropagation();
+    };
+
+    document.addEventListener("click", () => {
+      settingsPanel.classList.add("hidden");
+    });
 
     window.onmessage = (event) => {
       const msg = event.data.pluginMessage;
