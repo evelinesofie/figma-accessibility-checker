@@ -29,6 +29,23 @@
       position: relative;
     }
 
+    button {
+      border: 1px solid #ccc;
+      background: white;
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f5f5f5;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
     .icon-button {
       width: 28px;
       height: 28px;
@@ -40,6 +57,7 @@
       align-items: center;
       justify-content: center;
       border-radius: 999px;
+      line-height: 1;
     }
 
     .icon-button:hover {
@@ -56,7 +74,7 @@
       position: absolute;
       top: calc(100% + 8px);
       right: 0;
-      width: 170px;
+      width: 210px;
       background: #fff;
       border: 1px solid #e8e8e8;
       border-radius: 10px;
@@ -84,31 +102,20 @@
       margin: 0;
     }
 
-    .hidden {
-      display: none;
+    .settings-divider {
+      height: 1px;
+      background: #eee;
+      margin: 10px 0;
+    }
+
+    .settings-reset-btn {
+      width: 100%;
     }
 
     .row {
       display: flex;
       gap: 8px;
       margin-bottom: 12px;
-    }
-
-    button {
-      border: 1px solid #ccc;
-      background: white;
-      border-radius: 6px;
-      padding: 8px 10px;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: #f5f5f5;
-    }
-
-    .icon-button {
-      padding: 6px 8px;
-      line-height: 1;
     }
 
     .spinner {
@@ -129,11 +136,6 @@
       }
     }
 
-    button:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
     .panel {
       border: 1px solid #e5e5e5;
       border-radius: 8px;
@@ -146,6 +148,25 @@
       border-radius: 8px;
       padding: 10px;
       margin-top: 10px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .issue:hover {
+      background: #fafafa;
+      border-color: #ddd;
+    }
+
+    .issue:focus-visible {
+      outline: 2px solid #bcd3ff;
+      outline-offset: 2px;
+    }
+
+    .issue-select-hint {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 12px;
+      color: #666;
     }
 
     .muted {
@@ -175,26 +196,22 @@
       display: none;
     }
 
-    .issue-actions {
+    .issue-actions-row {
+      display: flex;
+      gap: 8px;
       margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .issue-actions {
+      display: flex;
+      gap: 8px;
     }
 
     .issue-details {
       margin-top: 10px;
       padding-top: 10px;
       border-top: 1px solid #eee;
-    }
-
-    .settings-panel {
-      border: 1px solid #e5e5e5;
-      border-radius: 8px;
-      padding: 10px;
-      margin-bottom: 12px;
-    }
-
-    .settings-option {
-      display: block;
-      margin-top: 8px;
     }
 
     pre {
@@ -226,7 +243,7 @@
       </button>
 
       <div id="settings-panel" class="settings-popup hidden">
-        <div class="settings-title">Explanation mode</div>
+        <div class="settings-title">Explanation Mode</div>
 
         <label class="settings-option">
           <input type="radio" name="demand-mode" value="always" />
@@ -237,6 +254,12 @@
           <input type="radio" name="demand-mode" value="on_demand" />
           <span>On-demand</span>
         </label>
+
+        <div class="settings-divider"></div>
+
+        <button id="resetDismissedBtn" class="settings-reset-btn" type="button">
+          Reset dismissed issues
+        </button>
       </div>
     </div>
   </div>
@@ -283,21 +306,17 @@
     const closeBtn = document.getElementById("closeBtn");
     const settingsButton = document.getElementById("settings-button");
     const settingsPanel = document.getElementById("settings-panel");
+    const resetDismissedBtn = document.getElementById("resetDismissedBtn");
     const modeInputs = document.querySelectorAll('input[name="demand-mode"]');
 
     function createId(prefix) {
-      return (
-        prefix +
-        "-" +
-        Date.now() +
-        "-" +
-        Math.floor(Math.random() * 1000000)
-      );
+      return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
     }
 
     let userId = "loading-user";
     const sessionId = createId("session");
     let latestResults = null;
+    let latestSelectionData = null;
     let isLoading = false;
     let currentDemandMode = "on_demand";
 
@@ -321,6 +340,32 @@
       );
     }
 
+    function sendSelectIssueNode(issue, issueIndex) {
+      if (!issue?.node_id) return;
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "select-issue-node",
+            nodeId: issue.node_id,
+          },
+        },
+        "*"
+      );
+
+      postLogEvent({
+        eventType: "issue_card_selected_node",
+        demandMode: currentDemandMode,
+        issueIndex,
+        issueTitle: issue?.title || "",
+        issueNode: issue?.node_name || "",
+        issueType: issue?.issue_type || "",
+        nodeId: issue?.node_id || "",
+        severity: issue?.severity || "",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     function setLoading(loading) {
       isLoading = loading;
 
@@ -340,6 +385,56 @@
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+    }
+
+    function syncModeInputs() {
+      modeInputs.forEach((input) => {
+        input.checked = input.value === currentDemandMode;
+      });
+    }
+
+    function getNodeById(nodeId) {
+      const nodes = latestSelectionData?.nodes || [];
+      return nodes.find((node) => node.id === nodeId) || null;
+    }
+
+    function attachIssueCardHandlers() {
+      const cards = document.querySelectorAll(".issue");
+
+      cards.forEach((card) => {
+        card.onclick = (event) => {
+          const target = event.target;
+
+          if (
+            target instanceof HTMLElement &&
+            target.closest("button")
+          ) {
+            return;
+          }
+
+          const issueIndex = Number(card.dataset.issueIndex);
+          const issue = latestResults?.issues?.[issueIndex];
+          sendSelectIssueNode(issue, issueIndex);
+        };
+
+        card.onkeydown = (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+
+          const target = event.target;
+          if (
+            target instanceof HTMLElement &&
+            target.closest("button")
+          ) {
+            return;
+          }
+
+          event.preventDefault();
+
+          const issueIndex = Number(card.dataset.issueIndex);
+          const issue = latestResults?.issues?.[issueIndex];
+          sendSelectIssueNode(issue, issueIndex);
+        };
+      });
     }
 
     function renderResults(payload) {
@@ -367,15 +462,24 @@
         </div>
         ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
         ${issues.map((issue, index) => `
-          <div class="issue" data-issue-index="${index}">
+          <div class="issue" data-issue-index="${index}" tabindex="0" role="button" aria-label="Select ${escapeHtml(issue.node_name || "node")} in Figma">
             <strong>${escapeHtml(issue.title || "Untitled issue")}</strong><br>
             <span class="muted">Node: ${escapeHtml(issue.node_name || "Unknown")}</span><br>
+            <span class="issue-select-hint">Click card to select layer in Figma</span><br>
             <span class="severity">${escapeHtml(issue.severity || "unknown")}</span>
 
-            <div class="issue-actions ${currentDemandMode === "always" ? "hidden" : ""}">
-              <button class="toggle-explanation-btn" data-issue-index="${index}">
-                Show Explanation
-              </button>
+            <div class="issue-actions-row">
+              <div class="issue-actions explanation-actions ${currentDemandMode === "always" ? "hidden" : ""}">
+                <button class="toggle-explanation-btn" type="button" data-issue-index="${index}">
+                  Show Explanation
+                </button>
+              </div>
+
+              <div class="issue-actions">
+                <button class="dismiss-issue-btn" type="button" data-issue-index="${index}">
+                  Dismiss Issue
+                </button>
+              </div>
             </div>
 
             <div class="issue-details ${currentDemandMode === "always" ? "" : "hidden"}" id="issue-details-${index}">
@@ -387,22 +491,18 @@
         `).join("")}
       `;
 
-      if (currentDemandMode === "on_demand") {
-        attachExplanationHandlers();
-      }
-    }
-
-    function syncModeInputs() {
-      modeInputs.forEach((input) => {
-        input.checked = input.value === currentDemandMode;
-      });
+      attachExplanationHandlers();
+      attachDismissHandlers();
+      attachIssueCardHandlers();
     }
 
     function attachExplanationHandlers() {
       const buttons = document.querySelectorAll(".toggle-explanation-btn");
 
       buttons.forEach((button) => {
-        button.onclick = () => {
+        button.onclick = (event) => {
+          event.stopPropagation();
+
           const issueIndex = Number(button.dataset.issueIndex);
           const details = document.getElementById(`issue-details-${issueIndex}`);
           if (!details) return;
@@ -420,6 +520,8 @@
               issueIndex,
               issueTitle: issue?.title || "",
               issueNode: issue?.node_name || "",
+              issueType: issue?.issue_type || "",
+              nodeId: issue?.node_id || "",
               severity: issue?.severity || "",
               totalIssues: latestResults?.issues?.length || 0,
               timestamp: new Date().toISOString(),
@@ -434,11 +536,58 @@
               issueIndex,
               issueTitle: issue?.title || "",
               issueNode: issue?.node_name || "",
+              issueType: issue?.issue_type || "",
+              nodeId: issue?.node_id || "",
               severity: issue?.severity || "",
               totalIssues: latestResults?.issues?.length || 0,
               timestamp: new Date().toISOString(),
             });
           }
+        };
+
+        button.onkeydown = (event) => {
+          event.stopPropagation();
+        };
+      });
+    }
+
+    function attachDismissHandlers() {
+      const buttons = document.querySelectorAll(".dismiss-issue-btn");
+
+      buttons.forEach((button) => {
+        button.onclick = (event) => {
+          event.stopPropagation();
+
+          const issueIndex = Number(button.dataset.issueIndex);
+          const issue = latestResults?.issues?.[issueIndex];
+          if (!issue) return;
+
+          const node = getNodeById(issue.node_id);
+
+          parent.postMessage(
+            {
+              pluginMessage: {
+                type: "dismiss-issue",
+                sessionId,
+                userId,
+                condition,
+                issue: {
+                  issue_type: issue.issue_type,
+                  node_id: issue.node_id,
+                  node_name: issue.node_name,
+                },
+                nodeFingerprint: node?.fingerprint || null,
+              },
+            },
+            "*"
+          );
+
+          button.textContent = "Dismissed ✓";
+          button.disabled = true;
+        };
+
+        button.onkeydown = (event) => {
+          event.stopPropagation();
         };
       });
     }
@@ -450,25 +599,30 @@
 
     function updateExplanationVisibilityInPlace() {
       const detailBlocks = document.querySelectorAll(".issue-details");
-      const actionBlocks = document.querySelectorAll(".issue-actions");
+      const explanationActionBlocks = document.querySelectorAll(".explanation-actions");
+      const toggleButtons = document.querySelectorAll(".toggle-explanation-btn");
 
-      detailBlocks.forEach((details) => {
-        if (currentDemandMode === "always") {
+      if (currentDemandMode === "always") {
+        detailBlocks.forEach((details) => {
           details.classList.remove("hidden");
-        } else {
-          details.classList.add("hidden");
-        }
-      });
+        });
 
-      actionBlocks.forEach((actions) => {
-        if (currentDemandMode === "always") {
+        explanationActionBlocks.forEach((actions) => {
           actions.classList.add("hidden");
-        } else {
-          actions.classList.remove("hidden");
-        }
-      });
+        });
+      } else {
+        detailBlocks.forEach((details) => {
+          details.classList.add("hidden");
+        });
 
-      if (currentDemandMode === "on_demand") {
+        explanationActionBlocks.forEach((actions) => {
+          actions.classList.remove("hidden");
+        });
+
+        toggleButtons.forEach((button) => {
+          button.textContent = "Show Explanation";
+        });
+
         attachExplanationHandlers();
       }
     }
@@ -478,6 +632,14 @@
       syncModeInputs();
       settingsPanel.classList.toggle("hidden");
     };
+
+    settingsPanel.onclick = (event) => {
+      event.stopPropagation();
+    };
+
+    document.addEventListener("click", () => {
+      settingsPanel.classList.add("hidden");
+    });
 
     modeInputs.forEach((input) => {
       input.addEventListener("change", (event) => {
@@ -502,6 +664,22 @@
         );
       });
     });
+
+    resetDismissedBtn.onclick = (event) => {
+      event.stopPropagation();
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "reset-dismissed-issues",
+            sessionId,
+            userId,
+            condition,
+          },
+        },
+        "*"
+      );
+    };
 
     checkBtn.onclick = () => {
       if (isLoading) return;
@@ -541,30 +719,13 @@
       }, 100);
     };
 
-    settingsButton.onclick = (event) => {
-      event.stopPropagation();
-      settingsPanel.classList.toggle("hidden");
-    };
-
-    settingsPanel.onclick = (event) => {
-      event.stopPropagation();
-    };
-
-    document.addEventListener("click", () => {
-      settingsPanel.classList.add("hidden");
-    });
-
     window.onmessage = (event) => {
       const msg = event.data.pluginMessage;
       if (!msg) return;
 
       if (msg.type === "demand-mode") {
         currentDemandMode = msg.payload.mode;
-
-        modeInputs.forEach((input) => {
-          input.checked = input.value === currentDemandMode;
-        });
-
+        syncModeInputs();
         applyDemandModeToInterface();
       }
 
@@ -585,6 +746,7 @@
 
       if (msg.type === "selection-data") {
         const data = msg.payload;
+        latestSelectionData = data;
         selectionSummary.textContent =
           `Selected top-level nodes: ${data.selectionCount}. Extracted nodes: ${data.nodes.length}.`;
         selectionData.textContent = JSON.stringify(data, null, 2);
@@ -605,6 +767,23 @@
         setLoading(false);
         statusEl.textContent = "";
         errorEl.textContent = msg.payload.message || "Unknown error";
+      }
+
+      if (msg.type === "issue-dismissed") {
+        const { issueType, nodeId } = msg.payload;
+
+        if (latestResults && Array.isArray(latestResults.issues)) {
+          latestResults.issues = latestResults.issues.filter((issue) => {
+            return !(issue.issue_type === issueType && issue.node_id === nodeId);
+          });
+          renderResults(latestResults);
+        }
+
+        statusEl.textContent = "Issue dismissed for this file until that element changes.";
+      }
+
+      if (msg.type === "dismissed-issues-reset") {
+        statusEl.textContent = "Dismissed issues reset for this file.";
       }
     };
 
