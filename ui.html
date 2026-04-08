@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <title>AccessibilityCheck</title>
+  <style>
+    body {
+      font-family: Inter, sans-serif;
+      margin: 0;
+      padding: 16px;
+      font-size: 13px;
+      color: #222;
+    }
+
+    h1 {
+      font-size: 16px;
+      margin: 0 0 12px 0;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      border: 1px solid #ccc;
+      background: white;
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f5f5f5;
+    }
+
+    .spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid #ccc;
+      border-top-color: #333;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .panel {
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 12px;
+    }
+
+    .issue {
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 10px;
+      margin-top: 10px;
+    }
+
+    .muted {
+      color: #666;
+    }
+
+    .severity {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid #ddd;
+      margin-top: 4px;
+    }
+
+    .status {
+      margin-top: 8px;
+      color: #444;
+    }
+
+    .error {
+      color: #b00020;
+      margin-top: 8px;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .issue-actions {
+      margin-top: 10px;
+    }
+
+    .issue-details {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #eee;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fafafa;
+      border: 1px solid #eee;
+      padding: 8px;
+      border-radius: 6px;
+      max-height: 180px;
+      overflow: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>AI Accessibility Checker</h1>
+
+  <div class="row">
+    <button id="refreshBtn">Refresh Selection</button>
+    <button id="checkBtn">Run GPT Check</button>
+    <button id="closeBtn">Close</button>
+  </div>
+
+  <div id="status" class="status muted"></div>
+  <div id="error" class="error"></div>
+
+  <div class="panel">
+    <strong>Session</strong>
+    <div id="sessionId" class="muted"></div>
+  </div>
+
+  <div class="panel">
+    <strong>Selection Summary</strong>
+    <div id="selectionSummary" class="muted">No selection loaded yet.</div>
+  </div>
+
+  <div class="panel">
+    <strong>Extracted Data</strong>
+    <pre id="selectionData">Waiting for data...</pre>
+  </div>
+
+  <div class="panel">
+    <strong>Check Results</strong>
+    <div id="results" class="muted">No checks run yet.</div>
+  </div>
+
+  <script>
+    let sessionStarted = false;
+
+    const condition = Math.random() < 0.5 ? "on_demand" : "always_visible";
+    const selectionSummary = document.getElementById("selectionSummary");
+    const selectionData = document.getElementById("selectionData");
+    const results = document.getElementById("results");
+    const statusEl = document.getElementById("status");
+    const errorEl = document.getElementById("error");
+    const sessionIdEl = document.getElementById("sessionId");
+
+    function createId(prefix) {
+      return (
+        prefix +
+        "-" +
+        Date.now() +
+        "-" +
+        Math.floor(Math.random() * 1000000)
+      );
+    }
+
+    let userId = "loading-user";
+    const sessionId = createId("session");
+
+    sessionIdEl.textContent = `User: ${userId} | Session: ${sessionId} | Condition: ${condition}`;
+
+    let latestResults = null;
+
+    const checkBtn = document.getElementById("checkBtn");
+    let isLoading = false;
+
+    function setLoading(loading) {
+      isLoading = loading;
+
+      if (loading) {
+        checkBtn.disabled = true;
+        checkBtn.innerHTML = `<span class="spinner"></span>Checking...`;
+      } else {
+        checkBtn.disabled = false;
+        checkBtn.innerHTML = "Run GPT Check";
+      }
+    }
+
+    document.getElementById("refreshBtn").onclick = () => {
+      errorEl.textContent = "";
+      statusEl.textContent = "";
+      parent.postMessage({ pluginMessage: { type: "get-selection" } }, "*");
+    };
+
+    checkBtn.onclick = () => {
+      if (isLoading) return;
+
+      errorEl.textContent = "";
+      statusEl.textContent = "Running GPT accessibility check...";
+
+      setLoading(true);
+
+      // log user intent
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "log-event",
+            sessionId,
+            userId,
+            condition,
+            event: {
+              eventType: "run_check_click",
+              timestamp: new Date().toISOString()
+            }
+          }
+        },
+        "*"
+      );
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "run-gpt-check",
+            sessionId,
+            userId,
+            condition
+          }
+        },
+        "*"
+      );
+    };
+
+    document.getElementById("closeBtn").onclick = () => {
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "log-event",
+            sessionId,
+            userId,
+            condition,
+            event: {
+              eventType: "session_end",
+              timestamp: new Date().toISOString()
+            }
+          }
+        },
+        "*"
+      );
+
+      setTimeout(() => {
+        parent.postMessage({ pluginMessage: { type: "close" } }, "*");
+      }, 100);
+    };
+
+    function escapeHtml(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function renderResults(payload) {
+      latestResults = payload;
+
+      const issues = payload.issues || [];
+      const summary = payload.summary || {};
+      const overall = payload.overall_assessment || "";
+
+      if (!issues.length) {
+        results.innerHTML = `
+        <div>No issues returned.</div>
+        <div class="muted">${escapeHtml(overall)}</div>
+      `;
+        return;
+      }
+
+      results.innerHTML = `
+      <div class="muted">
+        Total nodes: ${summary.total_nodes ?? "?"}<br>
+        Text nodes: ${summary.text_nodes ?? "?"}<br>
+        Issues found: ${issues.length}
+      </div>
+      ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
+      ${issues
+          .map(
+            (issue, index) => `
+            <div class="issue" data-issue-index="${index}">
+              <strong>${escapeHtml(issue.title || "Untitled issue")}</strong><br>
+              <span class="muted">Node: ${escapeHtml(issue.node_name || "Unknown")}</span><br>
+              <span class="severity">${escapeHtml(issue.severity || "unknown")}</span>
+
+              ${condition === "on_demand"
+                ? `
+                    <div class="issue-actions">
+                      <button class="toggle-explanation-btn" data-issue-index="${index}">
+                        Show Explanation
+                      </button>
+                    </div>
+                  `
+                : ""
+              }
+
+              <div
+                class="issue-details ${condition === "always_visible" ? "" : "hidden"}"
+                id="issue-details-${index}"
+              >
+                <p>${escapeHtml(issue.explanation || "")}</p>
+                <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
+                <p><strong>Suggestion:</strong> ${escapeHtml(issue.suggestion || "")}</p>
+              </div>
+            </div>
+          `
+          )
+          .join("")}
+    `;
+
+      if (condition === "on_demand") {
+        attachExplanationHandlers();
+      }
+    }
+
+    function attachExplanationHandlers() {
+      const buttons = document.querySelectorAll(".toggle-explanation-btn");
+
+      buttons.forEach((button) => {
+        button.onclick = () => {
+          const issueIndex = Number(button.dataset.issueIndex);
+          const details = document.getElementById(`issue-details-${issueIndex}`);
+          if (!details) return;
+
+          const issue = latestResults?.issues?.[issueIndex];
+          const isHidden = details.classList.contains("hidden");
+
+          if (isHidden) {
+            details.classList.remove("hidden");
+            button.textContent = "Hide Explanation";
+
+            parent.postMessage(
+              {
+                pluginMessage: {
+                  type: "log-event",
+                  sessionId,
+                  userId,
+                  condition,
+                  event: {
+                    eventType: "show_explanation",
+                    issueIndex,
+                    issueTitle: issue?.title || "",
+                    issueNode: issue?.node_name || "",
+                    severity: issue?.severity || "",
+                    totalIssues: latestResults?.issues?.length || 0,
+                    timestamp: new Date().toISOString()
+                  }
+                }
+              },
+              "*"
+            );
+          } else {
+            details.classList.add("hidden");
+            button.textContent = "Show Explanation";
+
+            parent.postMessage(
+              {
+                pluginMessage: {
+                  type: "log-event",
+                  sessionId,
+                  userId,
+                  condition,
+                  event: {
+                    eventType: "hide_explanation",
+                    issueIndex,
+                    issueTitle: issue?.title || "",
+                    issueNode: issue?.node_name || "",
+                    severity: issue?.severity || "",
+                    totalIssues: latestResults?.issues?.length || 0,
+                    timestamp: new Date().toISOString()
+                  }
+                }
+              },
+              "*"
+            );
+          }
+        };
+      });
+    }
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === "user-id") {
+        userId = msg.payload.userId || "unknown-user";
+        sessionIdEl.textContent = `User: ${userId} | Session: ${sessionId} | Condition: ${condition}`;
+
+        if (!sessionStarted) {
+          sessionStarted = true;
+
+          parent.postMessage(
+            {
+              pluginMessage: {
+                type: "log-event",
+                sessionId,
+                userId,
+                condition,
+                event: {
+                  eventType: "session_start",
+                  timestamp: new Date().toISOString()
+                }
+              }
+            },
+            "*"
+          );
+        }
+      }
+
+      if (msg.type === "selection-data") {
+        const data = msg.payload;
+        selectionSummary.textContent =
+          `Selected top-level nodes: ${data.selectionCount}. Extracted nodes: ${data.nodes.length}.`;
+        selectionData.textContent = JSON.stringify(data, null, 2);
+      }
+
+      if (msg.type === "status") {
+        statusEl.textContent = msg.payload.message || "";
+      }
+
+      if (msg.type === "check-results") {
+        setLoading(false);
+        statusEl.textContent = "Check complete.";
+        errorEl.textContent = "";
+        renderResults(msg.payload);
+      }
+
+      if (msg.type === "check-error") {
+        setLoading(false);
+        statusEl.textContent = "";
+        errorEl.textContent = msg.payload.message || "Unknown error";
+      }
+    };
+  </script>
+</body>
+
+</html>
