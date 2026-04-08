@@ -18,6 +18,13 @@
       margin: 0 0 12px 0;
     }
 
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
     .row {
       display: flex;
       gap: 8px;
@@ -34,6 +41,11 @@
 
     button:hover {
       background: #f5f5f5;
+    }
+
+    .icon-button {
+      padding: 6px 8px;
+      line-height: 1;
     }
 
     .spinner {
@@ -110,6 +122,18 @@
       border-top: 1px solid #eee;
     }
 
+    .settings-panel {
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+
+    .settings-option {
+      display: block;
+      margin-top: 8px;
+    }
+
     pre {
       white-space: pre-wrap;
       word-break: break-word;
@@ -124,11 +148,25 @@
 </head>
 
 <body>
-  <h1>AI Accessibility Checker</h1>
+  <div class="topbar">
+    <h1>AI Accessibility Checker</h1>
+    <button id="settings-button" class="icon-button" title="Settings">⚙️</button>
+  </div>
+
+  <div id="settings-panel" class="settings-panel hidden">
+    <div><strong>Explanation mode</strong></div>
+    <label class="settings-option">
+      <input type="radio" name="demand-mode" value="always" />
+      Always
+    </label>
+    <label class="settings-option">
+      <input type="radio" name="demand-mode" value="on_demand" />
+      On-demand
+    </label>
+  </div>
 
   <div class="row">
-    <button id="refreshBtn">Refresh Selection</button>
-    <button id="checkBtn">Run GPT Check</button>
+    <button id="checkBtn">Check for Issues</button>
     <button id="closeBtn">Close</button>
   </div>
 
@@ -157,14 +195,19 @@
 
   <script>
     let sessionStarted = false;
-
     const condition = Math.random() < 0.5 ? "on_demand" : "always_visible";
+
     const selectionSummary = document.getElementById("selectionSummary");
     const selectionData = document.getElementById("selectionData");
     const results = document.getElementById("results");
     const statusEl = document.getElementById("status");
     const errorEl = document.getElementById("error");
     const sessionIdEl = document.getElementById("sessionId");
+    const checkBtn = document.getElementById("checkBtn");
+    const closeBtn = document.getElementById("closeBtn");
+    const settingsButton = document.getElementById("settings-button");
+    const settingsPanel = document.getElementById("settings-panel");
+    const modeInputs = document.querySelectorAll('input[name="demand-mode"]');
 
     function createId(prefix) {
       return (
@@ -178,13 +221,29 @@
 
     let userId = "loading-user";
     const sessionId = createId("session");
-
-    sessionIdEl.textContent = `User: ${userId} | Session: ${sessionId} | Condition: ${condition}`;
-
     let latestResults = null;
-
-    const checkBtn = document.getElementById("checkBtn");
     let isLoading = false;
+    let currentDemandMode = "on_demand";
+
+    function updateSessionLabel() {
+      sessionIdEl.textContent =
+        `User: ${userId} | Session: ${sessionId} | Condition: ${condition} | Mode: ${currentDemandMode}`;
+    }
+
+    function postLogEvent(event) {
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "log-event",
+            sessionId,
+            userId,
+            condition,
+            event,
+          },
+        },
+        "*"
+      );
+    }
 
     function setLoading(loading) {
       isLoading = loading;
@@ -194,75 +253,9 @@
         checkBtn.innerHTML = `<span class="spinner"></span>Checking...`;
       } else {
         checkBtn.disabled = false;
-        checkBtn.innerHTML = "Run GPT Check";
+        checkBtn.innerHTML = "Check for Issues";
       }
     }
-
-    document.getElementById("refreshBtn").onclick = () => {
-      errorEl.textContent = "";
-      statusEl.textContent = "";
-      parent.postMessage({ pluginMessage: { type: "get-selection" } }, "*");
-    };
-
-    checkBtn.onclick = () => {
-      if (isLoading) return;
-
-      errorEl.textContent = "";
-      statusEl.textContent = "Running GPT accessibility check...";
-
-      setLoading(true);
-
-      // log user intent
-      parent.postMessage(
-        {
-          pluginMessage: {
-            type: "log-event",
-            sessionId,
-            userId,
-            condition,
-            event: {
-              eventType: "run_check_click",
-              timestamp: new Date().toISOString()
-            }
-          }
-        },
-        "*"
-      );
-
-      parent.postMessage(
-        {
-          pluginMessage: {
-            type: "run-gpt-check",
-            sessionId,
-            userId,
-            condition
-          }
-        },
-        "*"
-      );
-    };
-
-    document.getElementById("closeBtn").onclick = () => {
-      parent.postMessage(
-        {
-          pluginMessage: {
-            type: "log-event",
-            sessionId,
-            userId,
-            condition,
-            event: {
-              eventType: "session_end",
-              timestamp: new Date().toISOString()
-            }
-          }
-        },
-        "*"
-      );
-
-      setTimeout(() => {
-        parent.postMessage({ pluginMessage: { type: "close" } }, "*");
-      }, 100);
-    };
 
     function escapeHtml(str) {
       return String(str ?? "")
@@ -274,6 +267,8 @@
     }
 
     function renderResults(payload) {
+      if (!payload) return;
+
       latestResults = payload;
 
       const issues = payload.issues || [];
@@ -282,53 +277,43 @@
 
       if (!issues.length) {
         results.innerHTML = `
-        <div>No issues returned.</div>
-        <div class="muted">${escapeHtml(overall)}</div>
-      `;
+          <div>No issues returned.</div>
+          <div class="muted">${escapeHtml(overall)}</div>
+        `;
         return;
       }
 
       results.innerHTML = `
-      <div class="muted">
-        Total nodes: ${summary.total_nodes ?? "?"}<br>
-        Text nodes: ${summary.text_nodes ?? "?"}<br>
-        Issues found: ${issues.length}
-      </div>
-      ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
-      ${issues
-          .map(
-            (issue, index) => `
-            <div class="issue" data-issue-index="${index}">
-              <strong>${escapeHtml(issue.title || "Untitled issue")}</strong><br>
-              <span class="muted">Node: ${escapeHtml(issue.node_name || "Unknown")}</span><br>
-              <span class="severity">${escapeHtml(issue.severity || "unknown")}</span>
+        <div class="muted">
+          Total nodes: ${summary.total_nodes ?? "?"}<br>
+          Text nodes: ${summary.text_nodes ?? "?"}<br>
+          Issues found: ${issues.length}
+        </div>
+        ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
+        ${issues.map((issue, index) => `
+          <div class="issue" data-issue-index="${index}">
+            <strong>${escapeHtml(issue.title || "Untitled issue")}</strong><br>
+            <span class="muted">Node: ${escapeHtml(issue.node_name || "Unknown")}</span><br>
+            <span class="severity">${escapeHtml(issue.severity || "unknown")}</span>
 
-              ${condition === "on_demand"
-                ? `
-                    <div class="issue-actions">
-                      <button class="toggle-explanation-btn" data-issue-index="${index}">
-                        Show Explanation
-                      </button>
-                    </div>
-                  `
-                : ""
-              }
-
-              <div
-                class="issue-details ${condition === "always_visible" ? "" : "hidden"}"
-                id="issue-details-${index}"
-              >
-                <p>${escapeHtml(issue.explanation || "")}</p>
-                <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
-                <p><strong>Suggestion:</strong> ${escapeHtml(issue.suggestion || "")}</p>
+            ${currentDemandMode === "on_demand" ? `
+              <div class="issue-actions">
+                <button class="toggle-explanation-btn" data-issue-index="${index}">
+                  Show Explanation
+                </button>
               </div>
-            </div>
-          `
-          )
-          .join("")}
-    `;
+            ` : ""}
 
-      if (condition === "on_demand") {
+            <div class="issue-details ${currentDemandMode === "always" ? "" : "hidden"}" id="issue-details-${index}">
+              <p>${escapeHtml(issue.explanation || "")}</p>
+              <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
+              <p><strong>Suggestion:</strong> ${escapeHtml(issue.suggestion || "")}</p>
+            </div>
+          </div>
+        `).join("")}
+      `;
+
+      if (currentDemandMode === "on_demand") {
         attachExplanationHandlers();
       }
     }
@@ -349,81 +334,134 @@
             details.classList.remove("hidden");
             button.textContent = "Hide Explanation";
 
-            parent.postMessage(
-              {
-                pluginMessage: {
-                  type: "log-event",
-                  sessionId,
-                  userId,
-                  condition,
-                  event: {
-                    eventType: "show_explanation",
-                    issueIndex,
-                    issueTitle: issue?.title || "",
-                    issueNode: issue?.node_name || "",
-                    severity: issue?.severity || "",
-                    totalIssues: latestResults?.issues?.length || 0,
-                    timestamp: new Date().toISOString()
-                  }
-                }
-              },
-              "*"
-            );
+            postLogEvent({
+              eventType: "show_explanation",
+              demandMode: currentDemandMode,
+              issueIndex,
+              issueTitle: issue?.title || "",
+              issueNode: issue?.node_name || "",
+              severity: issue?.severity || "",
+              totalIssues: latestResults?.issues?.length || 0,
+              timestamp: new Date().toISOString(),
+            });
           } else {
             details.classList.add("hidden");
             button.textContent = "Show Explanation";
 
-            parent.postMessage(
-              {
-                pluginMessage: {
-                  type: "log-event",
-                  sessionId,
-                  userId,
-                  condition,
-                  event: {
-                    eventType: "hide_explanation",
-                    issueIndex,
-                    issueTitle: issue?.title || "",
-                    issueNode: issue?.node_name || "",
-                    severity: issue?.severity || "",
-                    totalIssues: latestResults?.issues?.length || 0,
-                    timestamp: new Date().toISOString()
-                  }
-                }
-              },
-              "*"
-            );
+            postLogEvent({
+              eventType: "hide_explanation",
+              demandMode: currentDemandMode,
+              issueIndex,
+              issueTitle: issue?.title || "",
+              issueNode: issue?.node_name || "",
+              severity: issue?.severity || "",
+              totalIssues: latestResults?.issues?.length || 0,
+              timestamp: new Date().toISOString(),
+            });
           }
         };
       });
     }
 
+    function applyDemandModeToInterface() {
+      updateSessionLabel();
+      if (latestResults) {
+        renderResults(latestResults);
+      }
+    }
+
+    settingsButton.onclick = () => {
+      settingsPanel.classList.toggle("hidden");
+    };
+
+    modeInputs.forEach((input) => {
+      input.addEventListener("click", () => {
+        console.log("RADIO CHANGED", input.value, input.checked);
+
+        if (!input.checked) return;
+
+        statusEl.textContent = `Sending mode change: ${input.value}`;
+
+        parent.postMessage(
+          {
+            pluginMessage: {
+              type: "set-demand-mode",
+              mode: input.value,
+              sessionId,
+              userId,
+              condition,
+              reason: "manual_settings_toggle",
+            },
+          },
+          "*"
+        );
+      });
+    });
+
+    checkBtn.onclick = () => {
+      if (isLoading) return;
+
+      errorEl.textContent = "";
+      statusEl.textContent = "Running GPT accessibility check...";
+      setLoading(true);
+
+      postLogEvent({
+        eventType: "run_check_click",
+        demandMode: currentDemandMode,
+        timestamp: new Date().toISOString(),
+      });
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "run-gpt-check",
+            sessionId,
+            userId,
+            condition,
+          },
+        },
+        "*"
+      );
+    };
+
+    closeBtn.onclick = () => {
+      postLogEvent({
+        eventType: "session_end",
+        demandMode: currentDemandMode,
+        timestamp: new Date().toISOString(),
+      });
+
+      setTimeout(() => {
+        parent.postMessage({ pluginMessage: { type: "close" } }, "*");
+      }, 100);
+    };
+
     window.onmessage = (event) => {
       const msg = event.data.pluginMessage;
       if (!msg) return;
 
+      if (msg.type === "demand-mode") {
+        currentDemandMode = msg.payload.mode;
+
+        modeInputs.forEach((input) => {
+          input.checked = input.value === currentDemandMode;
+        });
+
+        applyDemandModeToInterface();
+      }
+
       if (msg.type === "user-id") {
         userId = msg.payload.userId || "unknown-user";
-        sessionIdEl.textContent = `User: ${userId} | Session: ${sessionId} | Condition: ${condition}`;
+        updateSessionLabel();
 
         if (!sessionStarted) {
           sessionStarted = true;
 
-          parent.postMessage(
-            {
-              pluginMessage: {
-                type: "log-event",
-                sessionId,
-                userId,
-                condition,
-                event: {
-                  eventType: "session_start",
-                  timestamp: new Date().toISOString()
-                }
-              }
-            },
-            "*"
-          );
+          postLogEvent({
+            eventType: "session_start",
+            demandMode: currentDemandMode,
+            timestamp: new Date().toISOString(),
+          });
         }
       }
 
@@ -451,6 +489,8 @@
         errorEl.textContent = msg.payload.message || "Unknown error";
       }
     };
+
+    updateSessionLabel();
   </script>
 </body>
 

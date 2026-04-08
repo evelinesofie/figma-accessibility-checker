@@ -19,6 +19,23 @@ type ScreenSummary = {
 	nodes: ExtractedNode[];
 };
 
+type DemandMode = "always" | "on_demand";
+
+async function getDemandMode(): Promise<DemandMode> {
+	const existing = await figma.clientStorage.getAsync("demand_mode");
+	if (existing === "always" || existing === "on_demand") {
+		return existing;
+	}
+
+	const defaultMode: DemandMode = "on_demand";
+	await figma.clientStorage.setAsync("demand_mode", defaultMode);
+	return defaultMode;
+}
+
+async function setDemandMode(mode: DemandMode): Promise<void> {
+	await figma.clientStorage.setAsync("demand_mode", mode);
+}
+
 function createId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
 }
@@ -96,6 +113,7 @@ function collectSelectionData(): ScreenSummary {
 async function sendSelectionToUI() {
 	const data = collectSelectionData();
 	const userId = await getOrCreateUserId();
+	const demandMode = await getDemandMode();
 
 	figma.ui.postMessage({
 		type: "selection-data",
@@ -106,6 +124,11 @@ async function sendSelectionToUI() {
 		type: "user-id",
 		payload: { userId },
 	});
+
+	figma.ui.postMessage({
+		type: "demand-mode",
+		payload: { mode: demandMode },
+	});
 }
 
 figma.on("selectionchange", async () => {
@@ -113,15 +136,13 @@ figma.on("selectionchange", async () => {
 });
 
 figma.ui.onmessage = async (msg) => {
-	if (msg.type === "get-selection") {
-		sendSelectionToUI();
-	}
-
+	console.log("CODE got message:", JSON.stringify(msg));
 	if (msg.type === "run-gpt-check") {
 		const data = collectSelectionData();
 		const sessionId = msg.sessionId || "unknown";
-		const userId = (await getOrCreateUserId()) || "unknown";
+		const userId = await getOrCreateUserId();
 		const condition = msg.condition || "unknown";
+		const demandMode = await getDemandMode();
 
 		figma.ui.postMessage({
 			type: "status",
@@ -136,6 +157,7 @@ figma.ui.onmessage = async (msg) => {
 					"X-Session-Id": sessionId,
 					"X-User-Id": userId,
 					"X-Condition": condition,
+					"X-Demand-Mode": demandMode,
 				},
 				body: JSON.stringify({
 					screen: data,
@@ -143,6 +165,7 @@ figma.ui.onmessage = async (msg) => {
 						sessionId,
 						userId,
 						condition,
+						demandMode,
 					},
 				}),
 			});
@@ -170,23 +193,74 @@ figma.ui.onmessage = async (msg) => {
 				},
 			});
 		}
+
+		return;
 	}
 
 	if (msg.type === "log-event") {
+		try {
+			const demandMode = await getDemandMode();
+
+			await fetch("http://localhost:3001/log", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Session-Id": msg.sessionId || "unknown",
+					"X-User-Id": msg.userId || (await getOrCreateUserId()),
+					"X-Condition": msg.condition || "unknown",
+					"X-Demand-Mode": demandMode,
+				},
+				body: JSON.stringify(
+					Object.assign({}, msg.event, { demandMode }),
+				),
+			});
+		} catch (error) {
+			console.error("Failed to log event:", error);
+		}
+
+		return;
+	}
+
+	if (msg.type === "set-demand-mode") {
+		console.log("SET DEMAND MODE HIT:", msg.mode);
+		const newMode = msg.mode as DemandMode;
+		const previousMode = await getDemandMode();
+		const userId = await getOrCreateUserId();
+
+		if (newMode !== "always" && newMode !== "on_demand") {
+			return;
+		}
+
+		if (newMode === previousMode) {
+			return;
+		}
+
+		await setDemandMode(newMode);
+		await sendSelectionToUI();
+
 		try {
 			await fetch("http://localhost:3001/log", {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 					"X-Session-Id": msg.sessionId || "unknown",
-					"X-User-Id": msg.userId || "unknown",
+					"X-User-Id": msg.userId || userId,
 					"X-Condition": msg.condition || "unknown",
+					"X-Demand-Mode": newMode,
 				},
-				body: JSON.stringify(msg.event),
+				body: JSON.stringify({
+					eventType: "demand_mode_changed",
+					fromMode: previousMode,
+					toMode: newMode,
+					trigger: msg.reason || "manual_settings_toggle",
+					timestamp: new Date().toISOString(),
+				}),
 			});
 		} catch (error) {
-			console.error("Failed to log event:", error);
+			console.error("Failed to log demand mode change:", error);
 		}
+
+		return;
 	}
 
 	if (msg.type === "close") {

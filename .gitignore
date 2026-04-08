@@ -13,3 +13,6 @@ dist/
 backend/.env
 backend/data/
 .DS_Store
+
+backend/data/*
+!backend/data/.gitkeep

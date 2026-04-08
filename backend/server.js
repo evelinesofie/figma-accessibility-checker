@@ -6,6 +6,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+dotenv.config();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -24,8 +26,6 @@ function appendEvent(event) {
 	fs.appendFileSync(eventsFile, JSON.stringify(event) + "\n", "utf8");
 	console.log("WROTE EVENT TO:", eventsFile);
 }
-
-dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -116,11 +116,13 @@ app.post("/analyze", async (req, res) => {
 		const userId = req.headers["x-user-id"] || "unknown";
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
+		const demandMode = req.headers["x-demand-mode"] || "unknown";
 
 		appendEvent({
 			userId,
 			sessionId,
 			condition,
+			demandMode,
 			eventType: "run_check",
 			selectionCount: compactScreen.selectionCount,
 			totalNodes: compactScreen.totalNodes,
@@ -196,6 +198,7 @@ app.post("/analyze", async (req, res) => {
 			userId,
 			sessionId,
 			condition,
+			demandMode,
 			eventType: "check_completed",
 			issueCount: Array.isArray(parsed.issues) ? parsed.issues.length : 0,
 			overallAssessment: parsed.overall_assessment || "",
@@ -211,7 +214,7 @@ app.post("/analyze", async (req, res) => {
 			message = error.message;
 		}
 
-		if (error?.status) {
+		if (error && typeof error === "object" && "status" in error) {
 			message = `OpenAI/API error ${error.status}: ${message}`;
 		}
 
@@ -222,16 +225,18 @@ app.post("/analyze", async (req, res) => {
 	}
 });
 
-app.post("/log", async (req, res) => {
+app.post("/log", (req, res) => {
 	try {
 		const userId = req.headers["x-user-id"] || "unknown";
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
+		const demandMode = req.headers["x-demand-mode"] || "unknown";
 
 		const record = {
 			userId,
 			sessionId,
 			condition,
+			demandMode,
 			...req.body,
 		};
 
