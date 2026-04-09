@@ -83,6 +83,10 @@ function getDismissedKey(userId, fileKey, issue) {
 	return `${userId}|${fileKey}|${createIssueKey(issue)}`;
 }
 
+function getDismissedNodeStateKey(fileKey, nodeId, nodeFingerprint) {
+	return `${fileKey}|${nodeId}|${nodeFingerprint || "no-fingerprint"}`;
+}
+
 function buildNodeIndex(compactScreen) {
 	const nodes = Array.isArray(compactScreen?.nodes)
 		? compactScreen.nodes
@@ -123,10 +127,18 @@ function dismissIssueForUser(userId, fileKey, issue, nodeFingerprint) {
 	const store = readDismissedIssues();
 	const existing = Array.isArray(store[userId]) ? store[userId] : [];
 	const dismissKey = getDismissedKey(userId, fileKey, issue);
-
-	const updatedEntries = existing.filter(
-		(item) => item.dismissKey !== dismissKey,
+	const nodeStateKey = getDismissedNodeStateKey(
+		fileKey,
+		issue.node_id,
+		nodeFingerprint,
 	);
+
+	const updatedEntries = existing.filter((item) => {
+		if (item.fileKey !== fileKey) return true;
+		if (item.nodeId !== issue.node_id) return true;
+
+		return item.nodeFingerprint !== nodeFingerprint;
+	});
 
 	updatedEntries.push({
 		dismissKey,
@@ -135,6 +147,7 @@ function dismissIssueForUser(userId, fileKey, issue, nodeFingerprint) {
 		nodeId: issue.node_id,
 		nodeName: issue.node_name,
 		nodeFingerprint: nodeFingerprint || null,
+		nodeStateKey,
 		dismissedAt: new Date().toISOString(),
 	});
 
@@ -152,7 +165,7 @@ function resetDismissedIssuesForUser(userId, fileKey) {
 function getActiveDismissedMapForUserAndFile(userId, fileKey, nodeIndex) {
 	const store = readDismissedIssues();
 	const entries = Array.isArray(store[userId]) ? store[userId] : [];
-	const active = new Map();
+	const activeByNodeState = new Set();
 	const staleDismissKeys = [];
 
 	for (const item of entries) {
@@ -171,7 +184,12 @@ function getActiveDismissedMapForUserAndFile(userId, fileKey, nodeIndex) {
 			!item.nodeFingerprint ||
 			item.nodeFingerprint === currentFingerprint
 		) {
-			active.set(item.dismissKey, item);
+			const nodeStateKey = getDismissedNodeStateKey(
+				fileKey,
+				item.nodeId,
+				currentFingerprint,
+			);
+			activeByNodeState.add(nodeStateKey);
 		} else {
 			staleDismissKeys.push(item.dismissKey);
 		}
@@ -185,7 +203,7 @@ function getActiveDismissedMapForUserAndFile(userId, fileKey, nodeIndex) {
 		writeDismissedIssues(store);
 	}
 
-	return active;
+	return activeByNodeState;
 }
 
 function getUserFileReviewCache(store, userId, fileKey) {
@@ -648,16 +666,33 @@ app.post("/analyze", async (req, res) => {
 		const mergedIssues = dedupeIssues([
 			...reusedIssues,
 			...newlyReviewedIssues,
-		]);
-		const activeDismissedMap = getActiveDismissedMapForUserAndFile(
+		]).map((issue) => ({
+			...issue,
+			node_fingerprint: getNodeFingerprintFromIndex(
+				nodeIndex,
+				issue.node_id,
+			),
+		}));
+
+		const activeDismissedNodeStates = getActiveDismissedMapForUserAndFile(
 			userId,
 			fileKey,
 			nodeIndex,
 		);
 
 		const visibleIssues = mergedIssues.filter((issue) => {
-			const dismissKey = getDismissedKey(userId, fileKey, issue);
-			return !activeDismissedMap.has(dismissKey);
+			const currentFingerprint = getNodeFingerprintFromIndex(
+				nodeIndex,
+				issue.node_id,
+			);
+
+			const nodeStateKey = getDismissedNodeStateKey(
+				fileKey,
+				issue.node_id,
+				currentFingerprint,
+			);
+
+			return !activeDismissedNodeStates.has(nodeStateKey);
 		});
 
 		const parsed = {

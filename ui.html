@@ -517,6 +517,7 @@
 
   <script>
     let sessionStarted = false;
+    let uiReady = false;
     const condition = "ui_mode_prototype";
 
     const selectionSummary = document.getElementById("selectionSummary");
@@ -901,10 +902,12 @@
     }
 
     function handleResolveIssue(issueIndex) {
+      if (!uiReady || userId === "loading-user") {
+        statusEl.textContent = "Please wait a moment and try again.";
+        return;
+      }
       const issue = latestResults?.issues?.[issueIndex];
       if (!issue) return;
-
-      const node = getNodeById(issue.node_id);
 
       parent.postMessage(
         {
@@ -918,7 +921,7 @@
               node_id: issue.node_id,
               node_name: issue.node_name,
             },
-            nodeFingerprint: node?.fingerprint || null,
+            nodeFingerprint: issue.node_fingerprint || null,
           },
         },
         "*"
@@ -1140,6 +1143,7 @@
       if (msg.type === "user-id") {
         userId = msg.payload.userId || "unknown-user";
         updateSessionLabel();
+        uiReady = true;
 
         if (!sessionStarted) {
           sessionStarted = true;
