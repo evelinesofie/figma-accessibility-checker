@@ -195,9 +195,10 @@
     }
 
     .issue-expand-btn {
-      margin-top: 1px;
+      margin-top: 0;
       font-size: 14px;
       color: #555;
+      margin-left: -4px;
     }
 
     .issue-title-wrap {
@@ -222,6 +223,23 @@
       align-items: center;
       gap: 4px;
       margin-left: auto;
+    }
+
+    .issue-chevron {
+      width: 14px;
+      height: 14px;
+      opacity: 0.9;
+      transform: rotate(0deg);
+      transform-origin: 50% 50%;
+      transition: transform 0.18s ease, opacity 0.12s ease;
+    }
+
+    .issue-expand-btn:hover .issue-chevron {
+      opacity: 1;
+    }
+
+    .issue-expand-btn.is-expanded .issue-chevron {
+      transform: rotate(90deg);
     }
 
     .severity {
@@ -449,7 +467,7 @@
         <div class="settings-divider"></div>
 
         <button id="resetDismissedBtn" class="settings-reset-btn" type="button">
-          Reset dismissed issues
+          Reset resolved issues
         </button>
       </div>
     </div>
@@ -652,19 +670,21 @@
         ${issues.map((issue, index) => {
         const state = ensureIssueState(issue);
         const expandedClass = state.expanded ? "issue-expanded" : "";
-        const chevron = state.expanded ? "▼" : "▶";
 
         return `
             <div class="issue ${expandedClass}" data-issue-index="${index}">
-              <div class="issue-header">
+              <div class="issue-header" data-action="toggle-expand" data-issue-index="${index}">
                 <button
-                  class="icon-button issue-expand-btn"
+                  class="icon-button issue-expand-btn ${state.expanded ? "is-expanded" : ""}"
                   type="button"
                   data-action="toggle-expand"
                   data-issue-index="${index}"
                   aria-label="${state.expanded ? "Collapse issue" : "Expand issue"}"
                   data-tooltip="${state.expanded ? "Collapse issue" : "Expand issue"}">
-                  <span aria-hidden="true">${chevron}</span>
+                  <svg class="issue-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="9 6 15 12 9 18"></polyline>
+                  </svg>
                 </button>
 
                 <div class="issue-title-wrap">
@@ -740,7 +760,20 @@
       if (!issue) return;
 
       const state = ensureIssueState(issue);
+      const wasExpanded = state.expanded;
       state.expanded = !state.expanded;
+
+      const button = results.querySelector(
+        `.issue-expand-btn[data-issue-index="${issueIndex}"]`
+      );
+
+      if (button) {
+        if (state.expanded) {
+          button.classList.add("is-expanded");
+        } else {
+          button.classList.remove("is-expanded");
+        }
+      }
 
       if (state.expanded) {
         state.visitCount += 1;
@@ -788,7 +821,9 @@
         });
       }
 
-      renderResults(latestResults);
+      setTimeout(() => {
+        renderResults(latestResults);
+      }, 180);
     }
 
     function handleToggleExplanation(issueIndex) {
@@ -1143,7 +1178,7 @@
       }
 
       if (msg.type === "dismissed-issues-reset") {
-        statusEl.textContent = "Dismissed issues reset for this file.";
+        statusEl.textContent = "Resolved issues reset for this file.";
       }
     };
 

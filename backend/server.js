@@ -259,6 +259,14 @@ General guidelines:
 - Return at most 10 issues.
 - Prefer fewer, stronger, better-grounded issues over many weak ones.
 - If there are no clear issues, return an empty issues array and a short overall assessment.
+- Only report issues that can be meaningfully improved in the Figma design itself.
+- Do not report implementation-only or code-only accessibility issues.
+- Exclude issues such as missing alt text, ARIA attributes, semantic HTML structure, keyboard event handling, screen reader roles, or other properties that cannot be directly fixed in Figma.
+- If an issue depends mainly on front-end code rather than the design mockup, do not include it.
+
+Figma-fixable issue guidance:
+- Include only issues that a designer could act on by changing text, color, size, spacing, labels, hierarchy, or visual structure in the mockup.
+- Exclude issues that require developer implementation, content management settings, or code-level semantics.
 
 Node anchoring requirements:
 - Each issue must be tied to ONE specific node.
