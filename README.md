@@ -1,20 +1,39 @@
-# AccessibilityCheck
+# AI Accessibility Checker (Figma Plugin)
 
-A Figma plugin prototype for AI-powered accessibility checking with on-demand explanations.
+## Overview
 
-## Structure
+A Figma plugin that detects accessibility issues in designs using AI and explanations.
 
-- `ui.html`: plugin UI
-- `code.ts`: Figma plugin controller
-- `backend/server.js`: local backend for GPT calls and logging
+---
+
+## Features
+
+- AI-based detection of accessibility issues (e.g., contrast, labels, hierarchy)
+- Interactive issue cards with:
+    - Fix suggestions (always visible)
+    - Optional explanations
+- Three explanation modes:
+    - **On-demand** (button)
+    - **Low-demand** (subtle “?” with nudge)
+    - **Always-visible**
+- Issue dismissal with persistence across sessions
+- Efficient re-analysis using node fingerprinting
+
+---
+
+## Architecture
+
+- **UI:** HTML, CSS, JS (Figma plugin UI)
+- **Plugin:** TypeScript (node extraction, communication)
+- **Backend:** Node.js + Express + OpenAI API
+
+---
 
 ## Setup
 
-### Plugin
+### Backend
 
 ```bash
 npm install
-npm run build
-cd backend
-npm install
-npm run dev
+node server.js
+```
