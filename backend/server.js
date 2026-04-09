@@ -136,7 +136,6 @@ function dismissIssueForUser(userId, fileKey, issue, nodeFingerprint) {
 	const updatedEntries = existing.filter((item) => {
 		if (item.fileKey !== fileKey) return true;
 		if (item.nodeId !== issue.node_id) return true;
-
 		return item.nodeFingerprint !== nodeFingerprint;
 	});
 
@@ -240,7 +239,7 @@ function makeCompactScreen(screen) {
 	};
 }
 
-function buildPrompt(compactScreen) {
+function buildInitialReviewPrompt(compactScreen) {
 	return `
 You are an AI accessibility reviewer for Figma screens.
 
@@ -329,6 +328,85 @@ Tone:
 
 Screen data:
 ${JSON.stringify(compactScreen, null, 2)}
+  `.trim();
+}
+
+function buildNodeUpdatePrompt({
+	previousNode,
+	currentNode,
+	previousIssues,
+	changedFields,
+}) {
+	return `
+You are updating a previous AI accessibility review for a single Figma node.
+
+Important goal: preserve review stability.
+A small edit should not cause unrelated issue types to appear for the first time.
+
+You must review the CURRENT node, but you must do so in light of:
+- the PREVIOUS version of the node
+- the PREVIOUS issues already reported for that same node
+- the list of changed fields
+
+Return ONLY valid JSON with this exact structure:
+
+{
+  "overall_assessment": string,
+  "issues": [
+    {
+      "issue_type": "small_text" | "low_contrast" | "small_touch_target" | "unclear_label" | "weak_visual_hierarchy" | "other",
+      "title": string,
+      "node_name": string,
+      "node_id": string,
+      "severity": "low" | "medium" | "high",
+      "explanation": string,
+      "why_it_matters": string,
+      "suggestion": string
+    }
+  ]
+}
+
+Critical stability rules:
+- Start from the previous issue set as the baseline.
+- Preserve previous issue judgments unless the actual change makes them no longer valid or materially changes their severity/explanation.
+- Do NOT introduce a new unrelated issue type just because you now notice something that was already present before.
+- New issue types should appear only when they are plausibly caused, revealed, or strongly justified by the changed fields.
+- If only colors changed, avoid introducing size-related or labeling-related issues unless the current data clearly makes that necessary because of the change itself.
+- If only text changed, avoid introducing unrelated size or contrast issues unless the change plausibly affects them.
+- If evidence remains weak, keep the prior judgment stable.
+
+General guidelines:
+- You are reviewing a design mockup, not live code.
+- Only report issues that can be meaningfully improved in the Figma design itself.
+- Do not report implementation-only or code-only accessibility issues.
+- Exclude issues such as missing alt text, ARIA attributes, semantic HTML structure, keyboard event handling, screen reader roles, or other properties that cannot be directly fixed in Figma.
+- Each issue must be tied to this one node only.
+- node_id must exactly match the current node id.
+- node_name must exactly match the current node name.
+- Do not report duplicate issue types for the same node.
+- Return only the strongest justified issues for this node.
+
+Issue typing:
+- issue_type must be exactly one of:
+  "small_text", "low_contrast", "small_touch_target", "unclear_label", "weak_visual_hierarchy", "other"
+
+Writing requirements:
+- title must be short, concrete, and descriptive.
+- explanation should briefly describe what is wrong in 1–2 sentences.
+- why_it_matters should briefly explain the user impact in 1–2 sentences.
+- suggestion should be a short, actionable fix line suitable for showing directly on the issue card.
+
+Previous node:
+${JSON.stringify(previousNode, null, 2)}
+
+Current node:
+${JSON.stringify(currentNode, null, 2)}
+
+Changed fields:
+${JSON.stringify(changedFields, null, 2)}
+
+Previous issues for this node:
+${JSON.stringify(previousIssues, null, 2)}
   `.trim();
 }
 
@@ -421,8 +499,61 @@ function dedupeIssues(issues) {
 	);
 }
 
+function extractComparableNodeSnapshot(node) {
+	if (!node || typeof node !== "object") return null;
+
+	return {
+		id: node.id,
+		name: node.name,
+		type: node.type,
+		visible: node.visible,
+		width: node.width,
+		height: node.height,
+		x: node.x,
+		y: node.y,
+		text: node.text,
+		fontSize: node.fontSize,
+		fills: Array.isArray(node.fills) ? [...node.fills] : [],
+		fingerprint: node.fingerprint,
+	};
+}
+
+function arraysEqual(a = [], b = []) {
+	if (!Array.isArray(a) || !Array.isArray(b)) return false;
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i += 1) {
+		if (a[i] !== b[i]) return false;
+	}
+	return true;
+}
+
+function getChangedFields(previousNode, currentNode) {
+	if (!previousNode || !currentNode) {
+		return ["new_node"];
+	}
+
+	const changed = [];
+
+	if (previousNode.name !== currentNode.name) changed.push("name");
+	if (previousNode.type !== currentNode.type) changed.push("type");
+	if (previousNode.visible !== currentNode.visible) changed.push("visible");
+	if (previousNode.width !== currentNode.width) changed.push("width");
+	if (previousNode.height !== currentNode.height) changed.push("height");
+	if (previousNode.x !== currentNode.x) changed.push("x");
+	if (previousNode.y !== currentNode.y) changed.push("y");
+	if ((previousNode.text || "") !== (currentNode.text || ""))
+		changed.push("text");
+	if (previousNode.fontSize !== currentNode.fontSize)
+		changed.push("fontSize");
+	if (!arraysEqual(previousNode.fills || [], currentNode.fills || [])) {
+		changed.push("fills");
+	}
+
+	return changed;
+}
+
 async function analyzeScreenWithModel(compactScreen, nodeIndex, client) {
-	const prompt = buildPrompt(compactScreen);
+	const prompt = buildInitialReviewPrompt(compactScreen);
 
 	const response = await client.responses.create({
 		model: "gpt-5-mini",
@@ -513,6 +644,100 @@ async function analyzeScreenWithModel(compactScreen, nodeIndex, client) {
 	};
 }
 
+async function updateNodeReviewWithModel({
+	previousNode,
+	currentNode,
+	previousIssues,
+	client,
+}) {
+	const changedFields = getChangedFields(previousNode, currentNode);
+	const singleNodeScreen = {
+		selectionCount: 1,
+		totalNodes: 1,
+		textNodes: currentNode.type === "TEXT" ? 1 : 0,
+		nodes: [currentNode],
+	};
+	const nodeIndex = buildNodeIndex(singleNodeScreen);
+
+	const prompt = buildNodeUpdatePrompt({
+		previousNode,
+		currentNode,
+		previousIssues,
+		changedFields,
+	});
+
+	const response = await client.responses.create({
+		model: "gpt-5-mini",
+		input: prompt,
+		text: {
+			format: {
+				type: "json_schema",
+				name: "accessibility_review_update",
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						overall_assessment: { type: "string" },
+						issues: {
+							type: "array",
+							items: {
+								type: "object",
+								additionalProperties: false,
+								properties: {
+									issue_type: {
+										type: "string",
+										enum: [
+											"small_text",
+											"low_contrast",
+											"small_touch_target",
+											"unclear_label",
+											"weak_visual_hierarchy",
+											"other",
+										],
+									},
+									title: { type: "string" },
+									node_name: { type: "string" },
+									node_id: { type: "string" },
+									severity: {
+										type: "string",
+										enum: ["low", "medium", "high"],
+									},
+									explanation: { type: "string" },
+									why_it_matters: { type: "string" },
+									suggestion: { type: "string" },
+								},
+								required: [
+									"issue_type",
+									"title",
+									"node_name",
+									"node_id",
+									"severity",
+									"explanation",
+									"why_it_matters",
+									"suggestion",
+								],
+							},
+						},
+					},
+					required: ["overall_assessment", "issues"],
+				},
+			},
+		},
+	});
+
+	const parsed = JSON.parse(response.output_text);
+	const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
+	const normalizedIssues = rawIssues
+		.map((issue) => normalizeIssue(issue, nodeIndex))
+		.filter(Boolean);
+
+	return {
+		overall_assessment: parsed.overall_assessment || "",
+		issues: dedupeIssues(normalizedIssues),
+		changedFields,
+	};
+}
+
 function buildSubScreenFromNodes(nodes) {
 	const compactNodes = nodes.map((node) => ({
 		id: node.id,
@@ -562,7 +787,6 @@ app.post("/analyze", async (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
-		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] ||
 			req.body?.meta?.fileKey ||
@@ -572,7 +796,6 @@ app.post("/analyze", async (req, res) => {
 			userId,
 			sessionId,
 			condition,
-			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "run_check",
@@ -591,7 +814,8 @@ app.post("/analyze", async (req, res) => {
 
 		const currentNodes = compactScreen.nodes || [];
 		const reusedIssues = [];
-		const nodesToReview = [];
+		const newNodesToReview = [];
+		const changedNodesToReview = [];
 		const currentNodeIds = new Set();
 
 		for (const node of currentNodes) {
@@ -605,15 +829,33 @@ app.post("/analyze", async (req, res) => {
 
 			const cachedEntry = fileReviewCache[node.id];
 
+			if (!cachedEntry) {
+				newNodesToReview.push(node);
+				continue;
+			}
+
 			if (
-				cachedEntry &&
 				cachedEntry.fingerprint === currentFingerprint &&
 				Array.isArray(cachedEntry.issues)
 			) {
 				reusedIssues.push(...cachedEntry.issues);
-			} else {
-				nodesToReview.push(node);
+				continue;
 			}
+
+			changedNodesToReview.push({
+				currentNode: node,
+				previousNode:
+					extractComparableNodeSnapshot(cachedEntry.nodeSnapshot) ||
+					extractComparableNodeSnapshot({
+						id: cachedEntry.nodeId,
+						name: cachedEntry.nodeName,
+						...cachedEntry.nodeSnapshot,
+					}),
+				previousIssues: Array.isArray(cachedEntry.issues)
+					? cachedEntry.issues
+					: [],
+				previousFingerprint: cachedEntry.fingerprint || null,
+			});
 		}
 
 		for (const cachedNodeId of Object.keys(fileReviewCache)) {
@@ -622,11 +864,13 @@ app.post("/analyze", async (req, res) => {
 			}
 		}
 
-		let newlyReviewedIssues = [];
+		let newNodeIssues = [];
+		let changedNodeIssues = [];
 		let overallAssessment = "";
+		let changedNodeSummaries = [];
 
-		if (nodesToReview.length > 0) {
-			const subScreen = buildSubScreenFromNodes(nodesToReview);
+		if (newNodesToReview.length > 0) {
+			const subScreen = buildSubScreenFromNodes(newNodesToReview);
 			const subNodeIndex = buildNodeIndex(subScreen);
 
 			const analysis = await analyzeScreenWithModel(
@@ -635,18 +879,18 @@ app.post("/analyze", async (req, res) => {
 				client,
 			);
 
-			newlyReviewedIssues = analysis.issues;
+			newNodeIssues = analysis.issues;
 			overallAssessment = analysis.overall_assessment || "";
 
 			const issuesByNodeId = new Map();
-			for (const issue of newlyReviewedIssues) {
+			for (const issue of newNodeIssues) {
 				if (!issuesByNodeId.has(issue.node_id)) {
 					issuesByNodeId.set(issue.node_id, []);
 				}
 				issuesByNodeId.get(issue.node_id).push(issue);
 			}
 
-			for (const node of nodesToReview) {
+			for (const node of newNodesToReview) {
 				const currentFingerprint =
 					typeof node.fingerprint === "string" &&
 					node.fingerprint.length > 0
@@ -657,17 +901,61 @@ app.post("/analyze", async (req, res) => {
 					nodeId: node.id,
 					nodeName: node.name,
 					fingerprint: currentFingerprint,
+					nodeSnapshot: extractComparableNodeSnapshot(node),
 					issues: issuesByNodeId.get(node.id) || [],
 					reviewedAt: new Date().toISOString(),
 				};
 			}
-
-			writeReviewCache(reviewCacheStore);
 		}
+
+		if (changedNodesToReview.length > 0) {
+			for (const item of changedNodesToReview) {
+				const currentNode = extractComparableNodeSnapshot(
+					item.currentNode,
+				);
+				const previousNode =
+					item.previousNode ||
+					extractComparableNodeSnapshot(item.currentNode);
+
+				const updated = await updateNodeReviewWithModel({
+					previousNode,
+					currentNode,
+					previousIssues: item.previousIssues,
+					client,
+				});
+
+				changedNodeIssues.push(...updated.issues);
+				changedNodeSummaries.push({
+					nodeId: currentNode.id,
+					nodeName: currentNode.name,
+					changedFields: updated.changedFields,
+					previousIssueCount: item.previousIssues.length,
+					updatedIssueCount: updated.issues.length,
+				});
+
+				const currentFingerprint =
+					typeof currentNode.fingerprint === "string" &&
+					currentNode.fingerprint.length > 0
+						? currentNode.fingerprint
+						: stableHash(currentNode);
+
+				fileReviewCache[currentNode.id] = {
+					nodeId: currentNode.id,
+					nodeName: currentNode.name,
+					fingerprint: currentFingerprint,
+					nodeSnapshot: extractComparableNodeSnapshot(currentNode),
+					issues: updated.issues,
+					reviewedAt: new Date().toISOString(),
+				};
+			}
+		}
+
+		writeReviewCache(reviewCacheStore);
 
 		const mergedIssues = dedupeIssues([
 			...reusedIssues,
-			...newlyReviewedIssues,
+			...newNodeIssues,
+			...changedNodeIssues,
 		]).map((issue) => ({
 			...issue,
 			node_fingerprint: getNodeFingerprintFromIndex(
@@ -704,11 +992,15 @@ app.post("/analyze", async (req, res) => {
 			},
 			overall_assessment:
 				overallAssessment ||
-				(nodesToReview.length === 0
-					? "No element changes detected since the last check."
-					: visibleIssues.length === 0
-						? "Issues reviewed for changed elements. No visible issues to show after filtering."
-						: "Issues updated for changed elements and reused for unchanged elements."),
+				(newNodesToReview.length === 0 &&
+				changedNodesToReview.length === 0
+					? "No element changes detected since the last check. Reusing existing issue results for the current selection."
+					: changedNodesToReview.length > 0 &&
+						  newNodesToReview.length === 0
+						? "Updated issues for changed elements using the previous review as context and reused results for unchanged elements."
+						: visibleIssues.length === 0
+							? "Issues reviewed for new or changed elements. No visible issues to show after filtering."
+							: "Issues updated for new or changed elements and reused for unchanged elements."),
 			issues: visibleIssues,
 		};
 
@@ -716,15 +1008,20 @@ app.post("/analyze", async (req, res) => {
 			userId,
 			sessionId,
 			condition,
-			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "check_completed",
 			issueCount: Array.isArray(parsed.issues) ? parsed.issues.length : 0,
 			reusedIssueCount: reusedIssues.length,
-			newlyReviewedIssueCount: newlyReviewedIssues.length,
-			reviewedNodeCount: nodesToReview.length,
-			unchangedNodeCount: currentNodes.length - nodesToReview.length,
+			newlyReviewedIssueCount: newNodeIssues.length,
+			updatedChangedNodeIssueCount: changedNodeIssues.length,
+			newNodeCount: newNodesToReview.length,
+			changedNodeCount: changedNodesToReview.length,
+			unchangedNodeCount:
+				currentNodes.length -
+				newNodesToReview.length -
+				changedNodesToReview.length,
+			changedNodeSummaries,
 			overallAssessment: parsed.overall_assessment || "",
 			timestamp: new Date().toISOString(),
 		});
@@ -755,7 +1052,6 @@ app.post("/log", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
-		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -763,14 +1059,12 @@ app.post("/log", (req, res) => {
 			userId,
 			sessionId,
 			condition,
-			uiMode,
 			demandMode,
 			fileKey,
 			...req.body,
 		};
 
 		appendEvent(record);
-
 		console.log("LOG EVENT:", JSON.stringify(record, null, 2));
 
 		res.json({ ok: true });
@@ -790,7 +1084,6 @@ app.post("/dismiss-issue", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
-		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -813,7 +1106,6 @@ app.post("/dismiss-issue", (req, res) => {
 			userId,
 			sessionId,
 			condition,
-			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "issue_dismissed",
@@ -843,7 +1135,6 @@ app.post("/reset-dismissed-issues", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
-		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -853,7 +1144,6 @@ app.post("/reset-dismissed-issues", (req, res) => {
 			userId,
 			sessionId,
 			condition,
-			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "dismissed_issues_reset",
