@@ -11,6 +11,7 @@
       padding: 16px;
       font-size: 13px;
       color: #222;
+      background: #fff;
     }
 
     h1 {
@@ -35,6 +36,7 @@
       border-radius: 6px;
       padding: 8px 10px;
       cursor: pointer;
+      font: inherit;
     }
 
     button:hover {
@@ -58,6 +60,8 @@
       justify-content: center;
       border-radius: 999px;
       line-height: 1;
+      position: relative;
+      flex-shrink: 0;
     }
 
     .icon-button:hover {
@@ -70,11 +74,16 @@
       outline-offset: 2px;
     }
 
+    .icon-button svg,
+    .icon-button span {
+      pointer-events: none;
+    }
+
     .settings-popup {
       position: absolute;
       top: calc(100% + 8px);
       right: 0;
-      width: 210px;
+      width: 230px;
       background: #fff;
       border: 1px solid #e8e8e8;
       border-radius: 10px;
@@ -141,45 +150,11 @@
       border-radius: 8px;
       padding: 12px;
       margin-top: 12px;
-    }
-
-    .issue {
-      border: 1px solid #eee;
-      border-radius: 8px;
-      padding: 10px;
-      margin-top: 10px;
-      cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease;
-    }
-
-    .issue:hover {
-      background: #fafafa;
-      border-color: #ddd;
-    }
-
-    .issue:focus-visible {
-      outline: 2px solid #bcd3ff;
-      outline-offset: 2px;
-    }
-
-    .issue-select-hint {
-      display: inline-block;
-      margin-top: 4px;
-      font-size: 12px;
-      color: #666;
+      background: #fff;
     }
 
     .muted {
       color: #666;
-    }
-
-    .severity {
-      display: inline-block;
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 999px;
-      border: 1px solid #ddd;
-      margin-top: 4px;
     }
 
     .status {
@@ -193,25 +168,214 @@
     }
 
     .hidden {
-      display: none;
+      display: none !important;
     }
 
-    .issue-actions-row {
-      display: flex;
-      gap: 8px;
+    .results-meta {
+      margin-bottom: 12px;
+    }
+
+    .issue {
+      border: 1px solid #e8e8e8;
+      border-radius: 10px;
       margin-top: 10px;
-      flex-wrap: wrap;
+      overflow: hidden;
+      background: #fff;
     }
 
-    .issue-actions {
+    .issue.issue-expanded {
+      border-color: #d9d9d9;
+    }
+
+    .issue-header {
       display: flex;
+      align-items: flex-start;
       gap: 8px;
+      padding: 10px;
     }
 
-    .issue-details {
+    .issue-expand-btn {
+      margin-top: 1px;
+      font-size: 14px;
+      color: #555;
+    }
+
+    .issue-title-wrap {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .issue-title {
+      font-weight: 600;
+      line-height: 1.35;
+      margin-bottom: 4px;
+    }
+
+    .issue-element {
+      color: #666;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .issue-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .severity {
+      display: inline-flex;
+      align-items: center;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid #ddd;
+      margin-top: 6px;
+      width: fit-content;
+      text-transform: capitalize;
+    }
+
+    .severity-high {
+      border-color: #f0c6c6;
+      background: #fff5f5;
+      color: #9f2626;
+    }
+
+    .severity-medium {
+      border-color: #f1dfb4;
+      background: #fffaf0;
+      color: #8b6500;
+    }
+
+    .severity-low {
+      border-color: #d8e8d8;
+      background: #f5fff5;
+      color: #2f6b2f;
+    }
+
+    .issue-body {
+      border-top: 1px solid #f1f1f1;
+      padding: 10px;
+      background: #fcfcfc;
+    }
+
+    .issue-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .fix-box,
+    .explanation-box {
+      border: 1px solid #ececec;
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+    }
+
+    .fix-box+.explanation-controls,
+    .fix-box+.explanation-box,
+    .explanation-controls+.explanation-box {
       margin-top: 10px;
-      padding-top: 10px;
-      border-top: 1px solid #eee;
+    }
+
+    .fix-box {
+      position: relative;
+      border: 1px solid #ececec;
+      border-radius: 8px;
+      padding: 12px;
+      padding-right: 42px;
+      background: #fff;
+    }
+
+    .fix-overlay-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 2;
+    }
+
+    .issue-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      margin: 0 0 6px 0;
+      line-height: 1.2;
+    }
+
+    .explanation-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+    }
+
+    .explanation-toggle-btn {
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    .questionmark-btn {
+      width: 22px;
+      height: 22px;
+      font-size: 13px;
+      border: 1px solid #dcdcdc;
+      color: #555;
+      background: #fff;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .questionmark-btn:hover {
+      background: #f7f7f7;
+      color: #222;
+    }
+
+    .questionmark-btn:focus-visible {
+      outline: 2px solid #bcd3ff;
+      outline-offset: 2px;
+    }
+
+    .questionmark-btn.attention-nudge {
+      animation: pulseNudge 1.1s ease-in-out 2;
+      border-color: #c4c4c4;
+    }
+
+    @keyframes pulseNudge {
+      0% {
+        transform: scale(1);
+      }
+
+      30% {
+        transform: scale(1.18);
+      }
+
+      60% {
+        transform: scale(0.96);
+      }
+
+      100% {
+        transform: scale(1);
+      }
+    }
+
+    .explanation-box p {
+      margin: 0 0 8px 0;
+      line-height: 1.45;
+    }
+
+    .explanation-box p:last-child {
+      margin-bottom: 0;
     }
 
     pre {
@@ -224,6 +388,28 @@
       max-height: 180px;
       overflow: auto;
     }
+
+    .tooltip-bubble {
+      position: fixed;
+      z-index: 9999;
+      max-width: 180px;
+      background: rgba(34, 34, 34, 0.96);
+      color: #fff;
+      font-size: 11px;
+      line-height: 1.35;
+      padding: 6px 8px;
+      border-radius: 6px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+
+    .tooltip-bubble.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
   </style>
 </head>
 
@@ -232,7 +418,7 @@
     <h1>AI Accessibility Checker</h1>
 
     <div class="settings-anchor">
-      <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings">
+      <button id="settings-button" class="icon-button" aria-label="Settings" data-tooltip="Settings">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"></circle>
@@ -246,13 +432,18 @@
         <div class="settings-title">Explanation Mode</div>
 
         <label class="settings-option">
-          <input type="radio" name="demand-mode" value="always" />
-          <span>Always</span>
+          <input type="radio" name="demand-mode" value="on_demand" />
+          <span>On-demand</span>
         </label>
 
         <label class="settings-option">
-          <input type="radio" name="demand-mode" value="on_demand" />
-          <span>On-demand</span>
+          <input type="radio" name="demand-mode" value="low_demand" />
+          <span>Low-demand</span>
+        </label>
+
+        <label class="settings-option">
+          <input type="radio" name="demand-mode" value="always_visible" />
+          <span>Always-visible</span>
         </label>
 
         <div class="settings-divider"></div>
@@ -266,7 +457,6 @@
 
   <div class="row">
     <button id="checkBtn">Check for Issues</button>
-    <button id="closeBtn">Close</button>
   </div>
 
   <div id="status" class="status muted"></div>
@@ -292,9 +482,11 @@
     <div id="results" class="muted">No checks run yet.</div>
   </div>
 
+  <div id="tooltipBubble" class="tooltip-bubble" aria-hidden="true"></div>
+
   <script>
     let sessionStarted = false;
-    const condition = Math.random() < 0.5 ? "on_demand" : "always_visible";
+    const condition = "ui_mode_prototype";
 
     const selectionSummary = document.getElementById("selectionSummary");
     const selectionData = document.getElementById("selectionData");
@@ -303,11 +495,11 @@
     const errorEl = document.getElementById("error");
     const sessionIdEl = document.getElementById("sessionId");
     const checkBtn = document.getElementById("checkBtn");
-    const closeBtn = document.getElementById("closeBtn");
     const settingsButton = document.getElementById("settings-button");
     const settingsPanel = document.getElementById("settings-panel");
     const resetDismissedBtn = document.getElementById("resetDismissedBtn");
     const modeInputs = document.querySelectorAll('input[name="demand-mode"]');
+    const tooltipBubble = document.getElementById("tooltipBubble");
 
     function createId(prefix) {
       return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
@@ -319,6 +511,28 @@
     let latestSelectionData = null;
     let isLoading = false;
     let currentDemandMode = "on_demand";
+
+    const issueUiState = {};
+    let tooltipTimer = null;
+    let currentTooltipTarget = null;
+
+    function getIssueKey(issue) {
+      return `${issue?.issue_type || "other"}|${issue?.node_id || "unknown-node"}`;
+    }
+
+    function ensureIssueState(issue) {
+      const key = getIssueKey(issue);
+      if (!issueUiState[key]) {
+        issueUiState[key] = {
+          expanded: false,
+          explanationVisible: false,
+          visitCount: 0,
+          everOpenedExplanation: false,
+          nudgeLogged: false
+        };
+      }
+      return issueUiState[key];
+    }
 
     function updateSessionLabel() {
       sessionIdEl.textContent =
@@ -340,42 +554,9 @@
       );
     }
 
-    function sendSelectIssueNode(issue, issueIndex) {
-      if (!issue?.node_id) return;
-
-      parent.postMessage(
-        {
-          pluginMessage: {
-            type: "select-issue-node",
-            nodeId: issue.node_id,
-          },
-        },
-        "*"
-      );
-
-      postLogEvent({
-        eventType: "issue_card_selected_node",
-        demandMode: currentDemandMode,
-        issueIndex,
-        issueTitle: issue?.title || "",
-        issueNode: issue?.node_name || "",
-        issueType: issue?.issue_type || "",
-        nodeId: issue?.node_id || "",
-        severity: issue?.severity || "",
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    function setLoading(loading) {
-      isLoading = loading;
-
-      if (loading) {
-        checkBtn.disabled = true;
-        checkBtn.innerHTML = `<span class="spinner"></span>Checking...`;
-      } else {
-        checkBtn.disabled = false;
-        checkBtn.innerHTML = "Check for Issues";
-      }
+    function getNodeById(nodeId) {
+      const nodes = latestSelectionData?.nodes || [];
+      return nodes.find((node) => node.id === nodeId) || null;
     }
 
     function escapeHtml(str) {
@@ -393,48 +574,55 @@
       });
     }
 
-    function getNodeById(nodeId) {
-      const nodes = latestSelectionData?.nodes || [];
-      return nodes.find((node) => node.id === nodeId) || null;
+    function setLoading(loading) {
+      isLoading = loading;
+
+      if (loading) {
+        checkBtn.disabled = true;
+        checkBtn.innerHTML = `<span class="spinner"></span>Checking...`;
+      } else {
+        checkBtn.disabled = false;
+        checkBtn.innerHTML = "Check for Issues";
+      }
     }
 
-    function attachIssueCardHandlers() {
-      const cards = document.querySelectorAll(".issue");
+    function severityClass(severity) {
+      if (severity === "high") return "severity-high";
+      if (severity === "medium") return "severity-medium";
+      return "severity-low";
+    }
 
-      cards.forEach((card) => {
-        card.onclick = (event) => {
-          const target = event.target;
+    function renderExplanationContent(issue) {
+      return `
+        <div class="explanation-box">
+          <div class="issue-section-label">Explanation</div>
+          <p>${escapeHtml(issue.explanation || "")}</p>
+          <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
+        </div>
+      `;
+    }
 
-          if (
-            target instanceof HTMLElement &&
-            target.closest("button")
-          ) {
-            return;
-          }
+    function renderExplanationControls(issue, issueIndex, state) {
+      if (currentDemandMode === "always_visible") {
+        return renderExplanationContent(issue);
+      }
 
-          const issueIndex = Number(card.dataset.issueIndex);
-          const issue = latestResults?.issues?.[issueIndex];
-          sendSelectIssueNode(issue, issueIndex);
-        };
+      if (currentDemandMode === "on_demand") {
+        return `
+      <div class="explanation-controls">
+        <button
+          class="explanation-toggle-btn"
+          type="button"
+          data-action="toggle-explanation"
+          data-issue-index="${issueIndex}">
+          ${state.explanationVisible ? "Hide Explanation" : "Show Explanation"}
+        </button>
+      </div>
+      ${state.explanationVisible ? renderExplanationContent(issue) : ""}
+    `;
+      }
 
-        card.onkeydown = (event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-
-          const target = event.target;
-          if (
-            target instanceof HTMLElement &&
-            target.closest("button")
-          ) {
-            return;
-          }
-
-          event.preventDefault();
-
-          const issueIndex = Number(card.dataset.issueIndex);
-          const issue = latestResults?.issues?.[issueIndex];
-          sendSelectIssueNode(issue, issueIndex);
-        };
-      });
+      return state.explanationVisible ? renderExplanationContent(issue) : "";
     }
 
     function renderResults(payload) {
@@ -455,175 +643,358 @@
       }
 
       results.innerHTML = `
-        <div class="muted">
+        <div class="results-meta muted">
           Total nodes: ${summary.total_nodes ?? "?"}<br>
           Text nodes: ${summary.text_nodes ?? "?"}<br>
           Issues found: ${issues.length}
         </div>
         ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
-        ${issues.map((issue, index) => `
-          <div class="issue" data-issue-index="${index}" tabindex="0" role="button" aria-label="Select ${escapeHtml(issue.node_name || "node")} in Figma">
-            <strong>${escapeHtml(issue.title || "Untitled issue")}</strong><br>
-            <span class="muted">Node: ${escapeHtml(issue.node_name || "Unknown")}</span><br>
-            <span class="issue-select-hint">Click card to select layer in Figma</span><br>
-            <span class="severity">${escapeHtml(issue.severity || "unknown")}</span>
+        ${issues.map((issue, index) => {
+        const state = ensureIssueState(issue);
+        const expandedClass = state.expanded ? "issue-expanded" : "";
+        const chevron = state.expanded ? "▼" : "▶";
 
-            <div class="issue-actions-row">
-              <div class="issue-actions explanation-actions ${currentDemandMode === "always" ? "hidden" : ""}">
-                <button class="toggle-explanation-btn" type="button" data-issue-index="${index}">
-                  Show Explanation
+        return `
+            <div class="issue ${expandedClass}" data-issue-index="${index}">
+              <div class="issue-header">
+                <button
+                  class="icon-button issue-expand-btn"
+                  type="button"
+                  data-action="toggle-expand"
+                  data-issue-index="${index}"
+                  aria-label="${state.expanded ? "Collapse issue" : "Expand issue"}"
+                  data-tooltip="${state.expanded ? "Collapse issue" : "Expand issue"}">
+                  <span aria-hidden="true">${chevron}</span>
                 </button>
+
+                <div class="issue-title-wrap">
+                  <div class="issue-title">${escapeHtml(issue.title || "Untitled issue")}</div>
+                  <div class="issue-element">Element: ${escapeHtml(issue.node_name || "Unknown")}</div>
+                  <div class="severity ${severityClass(issue.severity)}">${escapeHtml(issue.severity || "unknown")}</div>
+                </div>
+
+                <div class="issue-header-actions">
+                  <button
+                    class="icon-button"
+                    type="button"
+                    data-action="go-to-element"
+                    data-issue-index="${index}"
+                    aria-label="Go to element"
+                    data-tooltip="Go to element">
+                    <span aria-hidden="true">↗</span>
+                  </button>
+
+                  <button
+                    class="icon-button"
+                    type="button"
+                    data-action="resolve-issue"
+                    data-issue-index="${index}"
+                    aria-label="Mark as resolved"
+                    data-tooltip="Mark as resolved">
+                    <span aria-hidden="true">✓</span>
+                  </button>
+                </div>
               </div>
 
-              <div class="issue-actions">
-                <button class="dismiss-issue-btn" type="button" data-issue-index="${index}">
-                  Dismiss Issue
-                </button>
-              </div>
-            </div>
+              ${state.expanded ? `
+                <div class="issue-body">
+                  <div class="fix-box">
+                    ${currentDemandMode === "low_demand" ? `
+                      <button
+                        class="questionmark-btn fix-overlay-btn ${state.visitCount >= 3 && !state.everOpenedExplanation ? "attention-nudge" : ""}"
+                        type="button"
+                        data-action="toggle-explanation"
+                        data-issue-index="${index}"
+                        aria-label="Show explanation"
+                        data-tooltip="Show explanation">
+                        ?
+                      </button>
+                    ` : ""}
 
-            <div class="issue-details ${currentDemandMode === "always" ? "" : "hidden"}" id="issue-details-${index}">
-              <p>${escapeHtml(issue.explanation || "")}</p>
-              <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
-              <p><strong>Suggestion:</strong> ${escapeHtml(issue.suggestion || "")}</p>
+                    <div class="issue-section-label">How To Fix It</div>
+                    <div>${escapeHtml(issue.suggestion || "")}</div>
+                  </div>
+                  ${renderExplanationControls(issue, index, state)}
+                </div>
+              ` : ""}
             </div>
-          </div>
-        `).join("")}
+          `;
+      }).join("")}
       `;
 
-      attachExplanationHandlers();
-      attachDismissHandlers();
-      attachIssueCardHandlers();
+      attachResultsHandlers();
+      wireDelayedTooltips(results);
     }
 
-    function attachExplanationHandlers() {
-      const buttons = document.querySelectorAll(".toggle-explanation-btn");
-
-      buttons.forEach((button) => {
-        button.onclick = (event) => {
-          event.stopPropagation();
-
-          const issueIndex = Number(button.dataset.issueIndex);
-          const details = document.getElementById(`issue-details-${issueIndex}`);
-          if (!details) return;
-
-          const issue = latestResults?.issues?.[issueIndex];
-          const isHidden = details.classList.contains("hidden");
-
-          if (isHidden) {
-            details.classList.remove("hidden");
-            button.textContent = "Hide Explanation";
-
-            postLogEvent({
-              eventType: "show_explanation",
-              demandMode: currentDemandMode,
-              issueIndex,
-              issueTitle: issue?.title || "",
-              issueNode: issue?.node_name || "",
-              issueType: issue?.issue_type || "",
-              nodeId: issue?.node_id || "",
-              severity: issue?.severity || "",
-              totalIssues: latestResults?.issues?.length || 0,
-              timestamp: new Date().toISOString(),
-            });
-          } else {
-            details.classList.add("hidden");
-            button.textContent = "Show Explanation";
-
-            postLogEvent({
-              eventType: "hide_explanation",
-              demandMode: currentDemandMode,
-              issueIndex,
-              issueTitle: issue?.title || "",
-              issueNode: issue?.node_name || "",
-              issueType: issue?.issue_type || "",
-              nodeId: issue?.node_id || "",
-              severity: issue?.severity || "",
-              totalIssues: latestResults?.issues?.length || 0,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        };
-
-        button.onkeydown = (event) => {
-          event.stopPropagation();
-        };
+    function logIssueEvent(base) {
+      postLogEvent({
+        demandMode: currentDemandMode,
+        totalIssues: latestResults?.issues?.length || 0,
+        timestamp: new Date().toISOString(),
+        ...base
       });
     }
 
-    function attachDismissHandlers() {
-      const buttons = document.querySelectorAll(".dismiss-issue-btn");
+    function handleToggleExpand(issueIndex) {
+      const issue = latestResults?.issues?.[issueIndex];
+      if (!issue) return;
 
-      buttons.forEach((button) => {
-        button.onclick = (event) => {
-          event.stopPropagation();
+      const state = ensureIssueState(issue);
+      state.expanded = !state.expanded;
 
-          const issueIndex = Number(button.dataset.issueIndex);
-          const issue = latestResults?.issues?.[issueIndex];
-          if (!issue) return;
+      if (state.expanded) {
+        state.visitCount += 1;
 
-          const node = getNodeById(issue.node_id);
+        logIssueEvent({
+          eventType: "issue_card_expanded",
+          issueIndex,
+          issueTitle: issue.title || "",
+          issueNode: issue.node_name || "",
+          issueType: issue.issue_type || "",
+          nodeId: issue.node_id || "",
+          severity: issue.severity || "",
+          visitCount: state.visitCount
+        });
 
-          parent.postMessage(
-            {
-              pluginMessage: {
-                type: "dismiss-issue",
-                sessionId,
-                userId,
-                condition,
-                issue: {
-                  issue_type: issue.issue_type,
-                  node_id: issue.node_id,
-                  node_name: issue.node_name,
-                },
-                nodeFingerprint: node?.fingerprint || null,
-              },
+        if (
+          currentDemandMode === "low_demand" &&
+          state.visitCount >= 3 &&
+          !state.everOpenedExplanation &&
+          !state.nudgeLogged
+        ) {
+          state.nudgeLogged = true;
+
+          logIssueEvent({
+            eventType: "low_demand_explanation_nudge_triggered",
+            issueIndex,
+            issueTitle: issue.title || "",
+            issueNode: issue.node_name || "",
+            issueType: issue.issue_type || "",
+            nodeId: issue.node_id || "",
+            severity: issue.severity || "",
+            visitCount: state.visitCount
+          });
+        }
+      } else {
+        logIssueEvent({
+          eventType: "issue_card_collapsed",
+          issueIndex,
+          issueTitle: issue.title || "",
+          issueNode: issue.node_name || "",
+          issueType: issue.issue_type || "",
+          nodeId: issue.node_id || "",
+          severity: issue.severity || "",
+          visitCount: state.visitCount
+        });
+      }
+
+      renderResults(latestResults);
+    }
+
+    function handleToggleExplanation(issueIndex) {
+      const issue = latestResults?.issues?.[issueIndex];
+      if (!issue) return;
+
+      const state = ensureIssueState(issue);
+      state.explanationVisible = !state.explanationVisible;
+
+      if (state.explanationVisible) {
+        state.everOpenedExplanation = true;
+
+        logIssueEvent({
+          eventType: "show_explanation",
+          issueIndex,
+          issueTitle: issue.title || "",
+          issueNode: issue.node_name || "",
+          issueType: issue.issue_type || "",
+          nodeId: issue.node_id || "",
+          severity: issue.severity || "",
+          visitCount: state.visitCount
+        });
+      } else {
+        logIssueEvent({
+          eventType: "hide_explanation",
+          issueIndex,
+          issueTitle: issue.title || "",
+          issueNode: issue.node_name || "",
+          issueType: issue.issue_type || "",
+          nodeId: issue.node_id || "",
+          severity: issue.severity || "",
+          visitCount: state.visitCount
+        });
+      }
+
+      renderResults(latestResults);
+    }
+
+    function handleGoToElement(issueIndex) {
+      const issue = latestResults?.issues?.[issueIndex];
+      if (!issue?.node_id) return;
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "select-issue-node",
+            nodeId: issue.node_id,
+          },
+        },
+        "*"
+      );
+
+      logIssueEvent({
+        eventType: "go_to_element_clicked",
+        issueIndex,
+        issueTitle: issue.title || "",
+        issueNode: issue.node_name || "",
+        issueType: issue.issue_type || "",
+        nodeId: issue.node_id || "",
+        severity: issue.severity || ""
+      });
+    }
+
+    function handleResolveIssue(issueIndex) {
+      const issue = latestResults?.issues?.[issueIndex];
+      if (!issue) return;
+
+      const node = getNodeById(issue.node_id);
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "dismiss-issue",
+            sessionId,
+            userId,
+            condition,
+            issue: {
+              issue_type: issue.issue_type,
+              node_id: issue.node_id,
+              node_name: issue.node_name,
             },
-            "*"
-          );
+            nodeFingerprint: node?.fingerprint || null,
+          },
+        },
+        "*"
+      );
 
-          button.textContent = "Dismissed ✓";
-          button.disabled = true;
-        };
+      logIssueEvent({
+        eventType: "issue_marked_resolved_clicked",
+        issueIndex,
+        issueTitle: issue.title || "",
+        issueNode: issue.node_name || "",
+        issueType: issue.issue_type || "",
+        nodeId: issue.node_id || "",
+        severity: issue.severity || ""
+      });
+    }
 
-        button.onkeydown = (event) => {
+    function attachResultsHandlers() {
+      const actionButtons = results.querySelectorAll("[data-action]");
+
+      actionButtons.forEach((button) => {
+        button.addEventListener("click", (event) => {
           event.stopPropagation();
-        };
+          const issueIndex = Number(button.dataset.issueIndex);
+          const action = button.dataset.action;
+
+          if (action === "toggle-expand") {
+            handleToggleExpand(issueIndex);
+            return;
+          }
+
+          if (action === "toggle-explanation") {
+            handleToggleExplanation(issueIndex);
+            return;
+          }
+
+          if (action === "go-to-element") {
+            handleGoToElement(issueIndex);
+            return;
+          }
+
+          if (action === "resolve-issue") {
+            handleResolveIssue(issueIndex);
+          }
+        });
+      });
+    }
+
+    function showTooltip(target) {
+      const text = target.dataset.tooltip;
+      if (!text) return;
+
+      tooltipBubble.textContent = text;
+      tooltipBubble.classList.remove("hidden");
+
+      const rect = target.getBoundingClientRect();
+      const bubbleRect = tooltipBubble.getBoundingClientRect();
+
+      let left = rect.left + rect.width / 2 - bubbleRect.width / 2;
+      let top = rect.top - bubbleRect.height - 8;
+
+      if (left < 8) left = 8;
+      if (left + bubbleRect.width > window.innerWidth - 8) {
+        left = window.innerWidth - bubbleRect.width - 8;
+      }
+
+      if (top < 8) {
+        top = rect.bottom + 8;
+      }
+
+      tooltipBubble.style.left = `${left}px`;
+      tooltipBubble.style.top = `${top}px`;
+      requestAnimationFrame(() => {
+        tooltipBubble.classList.add("visible");
+      });
+    }
+
+    function hideTooltip() {
+      clearTimeout(tooltipTimer);
+      tooltipTimer = null;
+      currentTooltipTarget = null;
+      tooltipBubble.classList.remove("visible");
+      tooltipBubble.style.left = "-9999px";
+      tooltipBubble.style.top = "-9999px";
+    }
+
+    function setupTooltipEventsForElement(el) {
+      el.addEventListener("mouseenter", () => {
+        clearTimeout(tooltipTimer);
+        currentTooltipTarget = el;
+        tooltipTimer = window.setTimeout(() => {
+          if (currentTooltipTarget === el) {
+            showTooltip(el);
+          }
+        }, 2000);
+      });
+
+      el.addEventListener("mouseleave", hideTooltip);
+      el.addEventListener("mousedown", hideTooltip);
+      el.addEventListener("focus", () => {
+        clearTimeout(tooltipTimer);
+        currentTooltipTarget = el;
+        tooltipTimer = window.setTimeout(() => {
+          if (currentTooltipTarget === el) {
+            showTooltip(el);
+          }
+        }, 2000);
+      });
+      el.addEventListener("blur", hideTooltip);
+    }
+
+    function wireDelayedTooltips(root = document) {
+      const tooltipTargets = root.querySelectorAll("[data-tooltip]");
+      tooltipTargets.forEach((el) => {
+        if (el.dataset.tooltipBound === "true") return;
+        el.dataset.tooltipBound = "true";
+        setupTooltipEventsForElement(el);
       });
     }
 
     function applyDemandModeToInterface() {
       updateSessionLabel();
-      updateExplanationVisibilityInPlace();
-    }
-
-    function updateExplanationVisibilityInPlace() {
-      const detailBlocks = document.querySelectorAll(".issue-details");
-      const explanationActionBlocks = document.querySelectorAll(".explanation-actions");
-      const toggleButtons = document.querySelectorAll(".toggle-explanation-btn");
-
-      if (currentDemandMode === "always") {
-        detailBlocks.forEach((details) => {
-          details.classList.remove("hidden");
-        });
-
-        explanationActionBlocks.forEach((actions) => {
-          actions.classList.add("hidden");
-        });
-      } else {
-        detailBlocks.forEach((details) => {
-          details.classList.add("hidden");
-        });
-
-        explanationActionBlocks.forEach((actions) => {
-          actions.classList.remove("hidden");
-        });
-
-        toggleButtons.forEach((button) => {
-          button.textContent = "Show Explanation";
-        });
-
-        attachExplanationHandlers();
+      syncModeInputs();
+      if (latestResults) {
+        renderResults(latestResults);
       }
     }
 
@@ -639,6 +1010,7 @@
 
     document.addEventListener("click", () => {
       settingsPanel.classList.add("hidden");
+      hideTooltip();
     });
 
     modeInputs.forEach((input) => {
@@ -707,16 +1079,9 @@
       );
     };
 
-    closeBtn.onclick = () => {
-      postLogEvent({
-        eventType: "session_end",
-        demandMode: currentDemandMode,
-        timestamp: new Date().toISOString(),
-      });
-
-      setTimeout(() => {
-        parent.postMessage({ pluginMessage: { type: "close" } }, "*");
-      }, 100);
+    setTimeout(() => {
+      parent.postMessage({ pluginMessage: { type: "close" } }, "*");
+    }, 100);
     };
 
     window.onmessage = (event) => {
@@ -779,7 +1144,7 @@
           renderResults(latestResults);
         }
 
-        statusEl.textContent = "Issue dismissed for this file until that element changes.";
+        statusEl.textContent = "Issue marked resolved for this file until that element changes.";
       }
 
       if (msg.type === "dismissed-issues-reset") {
@@ -787,7 +1152,9 @@
       }
     };
 
+    wireDelayedTooltips(document);
     updateSessionLabel();
+    syncModeInputs();
   </script>
 </body>
 

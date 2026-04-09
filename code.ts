@@ -20,15 +20,23 @@ type ScreenSummary = {
 	nodes: ExtractedNode[];
 };
 
-type DemandMode = "always" | "on_demand";
+type DemandMode = "on_demand" | "low_demand" | "always_visible";
 
 function getFileKey(): string {
 	return figma.fileKey || "unknown-file";
 }
 
+function isDemandMode(value: unknown): value is DemandMode {
+	return (
+		value === "on_demand" ||
+		value === "low_demand" ||
+		value === "always_visible"
+	);
+}
+
 async function getDemandMode(): Promise<DemandMode> {
 	const existing = await figma.clientStorage.getAsync("demand_mode");
-	if (existing === "always" || existing === "on_demand") {
+	if (isDemandMode(existing)) {
 		return existing;
 	}
 
@@ -289,6 +297,7 @@ figma.ui.onmessage = async (msg) => {
 	if (msg.type === "log-event") {
 		try {
 			const demandMode = await getDemandMode();
+			const fileKey = getFileKey();
 
 			await fetch("http://localhost:3001/log", {
 				method: "POST",
@@ -298,9 +307,10 @@ figma.ui.onmessage = async (msg) => {
 					"X-User-Id": msg.userId || (await getOrCreateUserId()),
 					"X-Condition": msg.condition || "unknown",
 					"X-Demand-Mode": demandMode,
+					"X-File-Key": fileKey,
 				},
 				body: JSON.stringify(
-					Object.assign({}, msg.event, { demandMode }),
+					Object.assign({}, msg.event, { demandMode, fileKey }),
 				),
 			});
 		} catch (error) {
@@ -311,11 +321,11 @@ figma.ui.onmessage = async (msg) => {
 	}
 
 	if (msg.type === "set-demand-mode") {
-		const newMode = msg.mode as DemandMode;
+		const newMode = msg.mode;
 		const previousMode = await getDemandMode();
 		const userId = await getOrCreateUserId();
 
-		if (newMode !== "always" && newMode !== "on_demand") {
+		if (!isDemandMode(newMode)) {
 			return;
 		}
 
@@ -339,6 +349,7 @@ figma.ui.onmessage = async (msg) => {
 					"X-User-Id": msg.userId || userId,
 					"X-Condition": msg.condition || "unknown",
 					"X-Demand-Mode": newMode,
+					"X-File-Key": getFileKey(),
 				},
 				body: JSON.stringify({
 					eventType: "demand_mode_changed",
@@ -346,6 +357,7 @@ figma.ui.onmessage = async (msg) => {
 					toMode: newMode,
 					trigger: msg.reason || "manual_settings_toggle",
 					timestamp: new Date().toISOString(),
+					fileKey: getFileKey(),
 				}),
 			});
 		} catch (error) {

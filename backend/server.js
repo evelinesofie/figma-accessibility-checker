@@ -277,6 +277,14 @@ Issue typing:
   "small_text", "low_contrast", "small_touch_target", "unclear_label", "weak_visual_hierarchy", "other"
 - Do not invent new issue types.
 
+Writing requirements for UI use:
+- title must be short, concrete, and descriptive.
+- Prefer element-first titles such as "Button has no visible text label" or "Text may have low contrast".
+- explanation should briefly describe what is wrong in 1–2 sentences.
+- why_it_matters should briefly explain the user impact in 1–2 sentences.
+- suggestion should be a short, actionable fix line suitable for showing directly on the issue card.
+- Avoid debug-style wording, internal system language, code references, or implementation details.
+
 Contrast-specific guidance:
 - When solid hex colors are available for text and its likely background, treat contrast as a stronger and more reliable signal.
 - If the foreground and background hex colors appear very similar, you may state the contrast concern more confidently.
@@ -701,12 +709,15 @@ app.post("/log", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const fileKey =
+			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
 		const record = {
 			userId,
 			sessionId,
 			condition,
 			demandMode,
+			fileKey,
 			...req.body,
 		};
 
