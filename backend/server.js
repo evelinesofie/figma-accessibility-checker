@@ -562,6 +562,7 @@ app.post("/analyze", async (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] ||
 			req.body?.meta?.fileKey ||
@@ -571,6 +572,7 @@ app.post("/analyze", async (req, res) => {
 			userId,
 			sessionId,
 			condition,
+			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "run_check",
@@ -703,7 +705,7 @@ app.post("/analyze", async (req, res) => {
 			overall_assessment:
 				overallAssessment ||
 				(nodesToReview.length === 0
-					? "No element changes detected since the last check. Reusing existing issue results for the current selection."
+					? "No element changes detected since the last check."
 					: visibleIssues.length === 0
 						? "Issues reviewed for changed elements. No visible issues to show after filtering."
 						: "Issues updated for changed elements and reused for unchanged elements."),
@@ -714,6 +716,7 @@ app.post("/analyze", async (req, res) => {
 			userId,
 			sessionId,
 			condition,
+			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "check_completed",
@@ -752,6 +755,7 @@ app.post("/log", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -759,6 +763,7 @@ app.post("/log", (req, res) => {
 			userId,
 			sessionId,
 			condition,
+			uiMode,
 			demandMode,
 			fileKey,
 			...req.body,
@@ -785,6 +790,7 @@ app.post("/dismiss-issue", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -807,6 +813,7 @@ app.post("/dismiss-issue", (req, res) => {
 			userId,
 			sessionId,
 			condition,
+			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "issue_dismissed",
@@ -836,6 +843,7 @@ app.post("/reset-dismissed-issues", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const uiMode = req.headers["x-ui-mode"] || "unknown";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -845,6 +853,7 @@ app.post("/reset-dismissed-issues", (req, res) => {
 			userId,
 			sessionId,
 			condition,
+			uiMode,
 			demandMode,
 			fileKey,
 			eventType: "dismissed_issues_reset",

@@ -5,6 +5,14 @@
   <meta charset="UTF-8" />
   <title>AccessibilityCheck</title>
   <style>
+    :root {
+      --accent: #6962e9;
+      /* soft indigo */
+      --accent-soft: #f5f7ff;
+      --accent-border: #dfe3ff;
+      --accent-text: #3730a3;
+    }
+
     body {
       font-family: Inter, sans-serif;
       margin: 0;
@@ -17,6 +25,7 @@
     h1 {
       font-size: 16px;
       margin: 0 0 12px 0;
+      color: #111827;
     }
 
     .topbar {
@@ -48,6 +57,30 @@
       cursor: not-allowed;
     }
 
+    button:focus-visible,
+    .icon-button:focus-visible,
+    .questionmark-btn:focus-visible {
+      outline: 2px solid var(--accent-border);
+      outline-offset: 2px;
+    }
+
+    #checkBtn {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    #checkBtn:hover {
+      filter: brightness(0.97);
+    }
+
+    #checkBtn:disabled {
+      background: #cbd5e1;
+      border-color: #cbd5e1;
+      color: #fff;
+    }
+
     .icon-button {
       width: 28px;
       height: 28px;
@@ -65,8 +98,13 @@
     }
 
     .icon-button:hover {
-      background: #f3f3f3;
-      color: #222;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+    }
+
+    .icon-button:hover {
+      background: var(--accent-soft);
+      color: var(--accent-text);
     }
 
     .icon-button:focus-visible {
@@ -159,7 +197,7 @@
 
     .status {
       margin-top: 8px;
-      color: #444;
+      color: #374151;
     }
 
     .error {
@@ -183,8 +221,10 @@
       background: #fff;
     }
 
+
     .issue.issue-expanded {
-      border-color: #d9d9d9;
+      border-color: var(--accent-border);
+      background: linear-gradient(to bottom, #fff, var(--accent-soft));
     }
 
     .issue-header {
@@ -460,24 +500,26 @@
       </button>
 
       <div id="settings-panel" class="settings-popup hidden">
-        <div class="settings-title">Explanation Mode</div>
+        <div id="demandModeSection">
+          <div class="settings-title">Explanation Mode</div>
 
-        <label class="settings-option">
-          <input type="radio" name="demand-mode" value="on_demand" />
-          <span>On-demand</span>
-        </label>
+          <label class="settings-option">
+            <input type="radio" name="demand-mode" value="on_demand" />
+            <span>On-demand</span>
+          </label>
 
-        <label class="settings-option">
-          <input type="radio" name="demand-mode" value="low_demand" />
-          <span>Low-demand</span>
-        </label>
+          <label class="settings-option">
+            <input type="radio" name="demand-mode" value="low_demand" />
+            <span>Low-demand</span>
+          </label>
 
-        <label class="settings-option">
-          <input type="radio" name="demand-mode" value="always_visible" />
-          <span>Always-visible</span>
-        </label>
+          <label class="settings-option">
+            <input type="radio" name="demand-mode" value="always_visible" />
+            <span>Always-visible</span>
+          </label>
 
-        <div class="settings-divider"></div>
+          <div id="settingsDivider" class="settings-divider"></div>
+        </div>
 
         <button id="resetDismissedBtn" class="settings-reset-btn" type="button">
           Reset resolved issues
@@ -493,17 +535,17 @@
   <div id="status" class="status muted"></div>
   <div id="error" class="error"></div>
 
-  <div class="panel">
+  <div id="debugSessionPanel" class="panel">
     <strong>Session</strong>
     <div id="sessionId" class="muted"></div>
   </div>
 
-  <div class="panel">
+  <div id="debugSelectionSummaryPanel" class="panel">
     <strong>Selection Summary</strong>
     <div id="selectionSummary" class="muted">No selection loaded yet.</div>
   </div>
 
-  <div class="panel">
+  <div id="debugExtractedDataPanel" class="panel">
     <strong>Extracted Data</strong>
     <pre id="selectionData">Waiting for data...</pre>
   </div>
@@ -532,6 +574,11 @@
     const resetDismissedBtn = document.getElementById("resetDismissedBtn");
     const modeInputs = document.querySelectorAll('input[name="demand-mode"]');
     const tooltipBubble = document.getElementById("tooltipBubble");
+    const demandModeSection = document.getElementById("demandModeSection");
+    const settingsDivider = document.getElementById("settingsDivider");
+    const debugSessionPanel = document.getElementById("debugSessionPanel");
+    const debugSelectionSummaryPanel = document.getElementById("debugSelectionSummaryPanel");
+    const debugExtractedDataPanel = document.getElementById("debugExtractedDataPanel");
 
     function createId(prefix) {
       return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
@@ -543,10 +590,19 @@
     let latestSelectionData = null;
     let isLoading = false;
     let currentDemandMode = "on_demand";
+    let currentUiMode = "real";
 
     const issueUiState = {};
     let tooltipTimer = null;
     let currentTooltipTarget = null;
+
+    function isDebugMode() {
+      return currentUiMode === "debug";
+    }
+
+    function isRealMode() {
+      return currentUiMode === "real";
+    }
 
     function getIssueKey(issue) {
       return `${issue?.issue_type || "other"}|${issue?.node_id || "unknown-node"}`;
@@ -568,7 +624,7 @@
 
     function updateSessionLabel() {
       sessionIdEl.textContent =
-        `User: ${userId} | Session: ${sessionId} | Condition: ${condition} | Mode: ${currentDemandMode}`;
+        `User: ${userId} | Session: ${sessionId} | Condition: ${condition} | UI Mode: ${currentUiMode} | Mode: ${currentDemandMode}`;
     }
 
     function postLogEvent(event) {
@@ -603,7 +659,23 @@
     function syncModeInputs() {
       modeInputs.forEach((input) => {
         input.checked = input.value === currentDemandMode;
+        input.disabled = isRealMode();
       });
+    }
+
+    function applyUiModeVisibility() {
+      const showDebugPanels = isDebugMode();
+
+      debugSessionPanel.classList.toggle("hidden", !showDebugPanels);
+      debugSelectionSummaryPanel.classList.toggle("hidden", !showDebugPanels);
+      debugExtractedDataPanel.classList.toggle("hidden", !showDebugPanels);
+
+      demandModeSection.classList.toggle("hidden", isRealMode());
+      settingsDivider.classList.toggle("hidden", isRealMode());
+
+      if (isRealMode()) {
+        settingsPanel.classList.add("hidden");
+      }
     }
 
     function setLoading(loading) {
@@ -762,6 +834,7 @@
 
     function logIssueEvent(base) {
       postLogEvent({
+        uiMode: currentUiMode,
         demandMode: currentDemandMode,
         totalIssues: latestResults?.issues?.length || 0,
         timestamp: new Date().toISOString(),
@@ -774,7 +847,6 @@
       if (!issue) return;
 
       const state = ensureIssueState(issue);
-      const wasExpanded = state.expanded;
       state.expanded = !state.expanded;
 
       const button = results.querySelector(
@@ -1049,6 +1121,15 @@
       }
     }
 
+    function applyUiModeToInterface() {
+      applyUiModeVisibility();
+      updateSessionLabel();
+      syncModeInputs();
+      if (latestResults) {
+        renderResults(latestResults);
+      }
+    }
+
     settingsButton.onclick = (event) => {
       event.stopPropagation();
       syncModeInputs();
@@ -1067,6 +1148,12 @@
     modeInputs.forEach((input) => {
       input.addEventListener("change", (event) => {
         event.stopPropagation();
+
+        if (isRealMode()) {
+          syncModeInputs();
+          return;
+        }
+
         if (!input.checked) return;
 
         currentDemandMode = input.value;
@@ -1113,6 +1200,7 @@
 
       postLogEvent({
         eventType: "run_check_click",
+        uiMode: currentUiMode,
         demandMode: currentDemandMode,
         timestamp: new Date().toISOString(),
       });
@@ -1134,6 +1222,11 @@
       const msg = event.data.pluginMessage;
       if (!msg) return;
 
+      if (msg.type === "ui-mode") {
+        currentUiMode = msg.payload.mode === "debug" ? "debug" : "real";
+        applyUiModeToInterface();
+      }
+
       if (msg.type === "demand-mode") {
         currentDemandMode = msg.payload.mode;
         syncModeInputs();
@@ -1150,6 +1243,7 @@
 
           postLogEvent({
             eventType: "session_start",
+            uiMode: currentUiMode,
             demandMode: currentDemandMode,
             timestamp: new Date().toISOString(),
           });
@@ -1202,6 +1296,7 @@
     wireDelayedTooltips(document);
     updateSessionLabel();
     syncModeInputs();
+    applyUiModeToInterface();
   </script>
 </body>
 

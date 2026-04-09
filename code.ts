@@ -21,6 +21,10 @@ type ScreenSummary = {
 };
 
 type DemandMode = "on_demand" | "low_demand" | "always_visible";
+type UiMode = "debug" | "real";
+
+const DEFAULT_DEMAND_MODE: DemandMode = "on_demand";
+const DEFAULT_UI_MODE: UiMode = "real";
 
 function getFileKey(): string {
 	return figma.fileKey || "unknown-file";
@@ -34,19 +38,36 @@ function isDemandMode(value: unknown): value is DemandMode {
 	);
 }
 
+function isUiMode(value: unknown): value is UiMode {
+	return value === "debug" || value === "real";
+}
+
 async function getDemandMode(): Promise<DemandMode> {
 	const existing = await figma.clientStorage.getAsync("demand_mode");
 	if (isDemandMode(existing)) {
 		return existing;
 	}
 
-	const defaultMode: DemandMode = "on_demand";
-	await figma.clientStorage.setAsync("demand_mode", defaultMode);
-	return defaultMode;
+	await figma.clientStorage.setAsync("demand_mode", DEFAULT_DEMAND_MODE);
+	return DEFAULT_DEMAND_MODE;
 }
 
 async function setDemandMode(mode: DemandMode): Promise<void> {
 	await figma.clientStorage.setAsync("demand_mode", mode);
+}
+
+async function getUiMode(): Promise<UiMode> {
+	const existing = await figma.clientStorage.getAsync("ui_mode");
+	if (isUiMode(existing)) {
+		return existing;
+	}
+
+	await figma.clientStorage.setAsync("ui_mode", DEFAULT_UI_MODE);
+	return DEFAULT_UI_MODE;
+}
+
+async function setUiMode(mode: UiMode): Promise<void> {
+	await figma.clientStorage.setAsync("ui_mode", mode);
 }
 
 function createId(prefix: string): string {
@@ -185,6 +206,7 @@ async function sendSelectionToUI() {
 	const data = collectSelectionData();
 	const userId = await getOrCreateUserId();
 	const demandMode = await getDemandMode();
+	const uiMode = await getUiMode();
 
 	figma.ui.postMessage({
 		type: "selection-data",
@@ -194,6 +216,11 @@ async function sendSelectionToUI() {
 	figma.ui.postMessage({
 		type: "user-id",
 		payload: { userId },
+	});
+
+	figma.ui.postMessage({
+		type: "ui-mode",
+		payload: { mode: uiMode },
 	});
 
 	figma.ui.postMessage({
@@ -237,6 +264,7 @@ figma.ui.onmessage = async (msg) => {
 		const userId = await getOrCreateUserId();
 		const condition = msg.condition || "unknown";
 		const demandMode = await getDemandMode();
+		const uiMode = await getUiMode();
 		const fileKey = getFileKey();
 
 		figma.ui.postMessage({
@@ -252,6 +280,7 @@ figma.ui.onmessage = async (msg) => {
 					"X-Session-Id": sessionId,
 					"X-User-Id": userId,
 					"X-Condition": condition,
+					"X-UI-Mode": uiMode,
 					"X-Demand-Mode": demandMode,
 					"X-File-Key": fileKey,
 				},
@@ -261,6 +290,7 @@ figma.ui.onmessage = async (msg) => {
 						sessionId,
 						userId,
 						condition,
+						uiMode,
 						demandMode,
 						fileKey,
 					},
@@ -297,6 +327,7 @@ figma.ui.onmessage = async (msg) => {
 	if (msg.type === "log-event") {
 		try {
 			const demandMode = await getDemandMode();
+			const uiMode = await getUiMode();
 			const fileKey = getFileKey();
 
 			await fetch("http://localhost:3001/log", {
@@ -306,11 +337,16 @@ figma.ui.onmessage = async (msg) => {
 					"X-Session-Id": msg.sessionId || "unknown",
 					"X-User-Id": msg.userId || (await getOrCreateUserId()),
 					"X-Condition": msg.condition || "unknown",
+					"X-UI-Mode": uiMode,
 					"X-Demand-Mode": demandMode,
 					"X-File-Key": fileKey,
 				},
 				body: JSON.stringify(
-					Object.assign({}, msg.event, { demandMode, fileKey }),
+					Object.assign({}, msg.event, {
+						uiMode,
+						demandMode,
+						fileKey,
+					}),
 				),
 			});
 		} catch (error) {
@@ -321,6 +357,17 @@ figma.ui.onmessage = async (msg) => {
 	}
 
 	if (msg.type === "set-demand-mode") {
+		const uiMode = await getUiMode();
+
+		if (uiMode === "real") {
+			const lockedMode = await getDemandMode();
+			figma.ui.postMessage({
+				type: "demand-mode",
+				payload: { mode: lockedMode },
+			});
+			return;
+		}
+
 		const newMode = msg.mode;
 		const previousMode = await getDemandMode();
 		const userId = await getOrCreateUserId();
@@ -348,6 +395,7 @@ figma.ui.onmessage = async (msg) => {
 					"X-Session-Id": msg.sessionId || "unknown",
 					"X-User-Id": msg.userId || userId,
 					"X-Condition": msg.condition || "unknown",
+					"X-UI-Mode": uiMode,
 					"X-Demand-Mode": newMode,
 					"X-File-Key": getFileKey(),
 				},
@@ -363,6 +411,23 @@ figma.ui.onmessage = async (msg) => {
 		} catch (error) {
 			console.error("Failed to log demand mode change:", error);
 		}
+
+		return;
+	}
+
+	if (msg.type === "set-ui-mode") {
+		const newMode = msg.mode;
+
+		if (!isUiMode(newMode)) {
+			return;
+		}
+
+		await setUiMode(newMode);
+
+		figma.ui.postMessage({
+			type: "ui-mode",
+			payload: { mode: newMode },
+		});
 
 		return;
 	}
@@ -426,6 +491,7 @@ figma.ui.onmessage = async (msg) => {
 	if (msg.type === "dismiss-issue") {
 		try {
 			const demandMode = await getDemandMode();
+			const uiMode = await getUiMode();
 			const fileKey = getFileKey();
 
 			const response = await fetch(
@@ -437,6 +503,7 @@ figma.ui.onmessage = async (msg) => {
 						"X-Session-Id": msg.sessionId || "unknown",
 						"X-User-Id": msg.userId || (await getOrCreateUserId()),
 						"X-Condition": msg.condition || "unknown",
+						"X-UI-Mode": uiMode,
 						"X-Demand-Mode": demandMode,
 						"X-File-Key": fileKey,
 					},
@@ -480,6 +547,7 @@ figma.ui.onmessage = async (msg) => {
 	if (msg.type === "reset-dismissed-issues") {
 		try {
 			const demandMode = await getDemandMode();
+			const uiMode = await getUiMode();
 			const fileKey = getFileKey();
 
 			const response = await fetch(
@@ -491,6 +559,7 @@ figma.ui.onmessage = async (msg) => {
 						"X-Session-Id": msg.sessionId || "unknown",
 						"X-User-Id": msg.userId || (await getOrCreateUserId()),
 						"X-Condition": msg.condition || "unknown",
+						"X-UI-Mode": uiMode,
 						"X-Demand-Mode": demandMode,
 						"X-File-Key": fileKey,
 					},
