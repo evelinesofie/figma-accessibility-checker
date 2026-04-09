@@ -1079,10 +1079,6 @@
       );
     };
 
-    setTimeout(() => {
-      parent.postMessage({ pluginMessage: { type: "close" } }, "*");
-    }, 100);
-
     window.onmessage = (event) => {
       const msg = event.data.pluginMessage;
       if (!msg) return;
