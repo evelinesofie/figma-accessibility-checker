@@ -7,7 +7,6 @@
   <style>
     :root {
       --accent: #6962e9;
-      /* soft indigo */
       --accent-soft: #f5f7ff;
       --accent-border: #dfe3ff;
       --accent-text: #3730a3;
@@ -95,11 +94,6 @@
       line-height: 1;
       position: relative;
       flex-shrink: 0;
-    }
-
-    .icon-button:hover {
-      background: var(--accent-soft);
-      color: var(--accent-text);
     }
 
     .icon-button:hover {
@@ -221,7 +215,6 @@
       background: #fff;
     }
 
-
     .issue.issue-expanded {
       border-color: var(--accent-border);
       background: linear-gradient(to bottom, #fff, var(--accent-soft));
@@ -337,7 +330,8 @@
       text-transform: uppercase;
       letter-spacing: 0.03em;
       color: #666;
-      margin-bottom: 4px;
+      margin: 0 0 6px 0;
+      line-height: 1.2;
     }
 
     .fix-box,
@@ -368,16 +362,6 @@
       top: 8px;
       right: 8px;
       z-index: 2;
-    }
-
-    .issue-section-label {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      color: #666;
-      margin: 0 0 6px 0;
-      line-height: 1.2;
     }
 
     .explanation-controls {
@@ -460,6 +444,19 @@
       overflow: auto;
     }
 
+    .preview-image {
+      width: 100%;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      display: block;
+      background: #fafafa;
+    }
+
+    .preview-empty {
+      color: #666;
+      font-size: 12px;
+    }
+
     .tooltip-bubble {
       position: fixed;
       z-index: 9999;
@@ -500,6 +497,22 @@
       </button>
 
       <div id="settings-panel" class="settings-popup hidden">
+        <div>
+          <div class="settings-title">UI Mode</div>
+
+          <label class="settings-option">
+            <input type="radio" name="ui-mode" value="debug" />
+            <span>Debug</span>
+          </label>
+
+          <label class="settings-option">
+            <input type="radio" name="ui-mode" value="real" />
+            <span>Real</span>
+          </label>
+
+          <div class="settings-divider"></div>
+        </div>
+
         <div id="demandModeSection">
           <div class="settings-title">Explanation Mode</div>
 
@@ -545,6 +558,15 @@
     <div id="selectionSummary" class="muted">No selection loaded yet.</div>
   </div>
 
+  <div id="debugSelectionPreviewPanel" class="panel">
+    <strong>Selection Preview</strong>
+    <div id="selectionPreviewMeta" class="muted">No selection preview loaded yet.</div>
+    <div style="margin-top:8px;">
+      <img id="selectionPreviewImage" class="preview-image hidden" alt="Selection preview" />
+      <div id="selectionPreviewEmpty" class="preview-empty">No preview available.</div>
+    </div>
+  </div>
+
   <div id="debugExtractedDataPanel" class="panel">
     <strong>Extracted Data</strong>
     <pre id="selectionData">Waiting for data...</pre>
@@ -564,6 +586,9 @@
 
     const selectionSummary = document.getElementById("selectionSummary");
     const selectionData = document.getElementById("selectionData");
+    const selectionPreviewMeta = document.getElementById("selectionPreviewMeta");
+    const selectionPreviewImage = document.getElementById("selectionPreviewImage");
+    const selectionPreviewEmpty = document.getElementById("selectionPreviewEmpty");
     const results = document.getElementById("results");
     const statusEl = document.getElementById("status");
     const errorEl = document.getElementById("error");
@@ -573,11 +598,13 @@
     const settingsPanel = document.getElementById("settings-panel");
     const resetDismissedBtn = document.getElementById("resetDismissedBtn");
     const modeInputs = document.querySelectorAll('input[name="demand-mode"]');
+    const uiModeInputs = document.querySelectorAll('input[name="ui-mode"]');
     const tooltipBubble = document.getElementById("tooltipBubble");
     const demandModeSection = document.getElementById("demandModeSection");
     const settingsDivider = document.getElementById("settingsDivider");
     const debugSessionPanel = document.getElementById("debugSessionPanel");
     const debugSelectionSummaryPanel = document.getElementById("debugSelectionSummaryPanel");
+    const debugSelectionPreviewPanel = document.getElementById("debugSelectionPreviewPanel");
     const debugExtractedDataPanel = document.getElementById("debugExtractedDataPanel");
 
     function createId(prefix) {
@@ -588,6 +615,7 @@
     const sessionId = createId("session");
     let latestResults = null;
     let latestSelectionData = null;
+    let latestSelectionImage = null;
     let isLoading = false;
     let currentDemandMode = "on_demand";
     let currentUiMode = "real";
@@ -642,11 +670,6 @@
       );
     }
 
-    function getNodeById(nodeId) {
-      const nodes = latestSelectionData?.nodes || [];
-      return nodes.find((node) => node.id === nodeId) || null;
-    }
-
     function escapeHtml(str) {
       return String(str ?? "")
         .replace(/&/g, "&amp;")
@@ -663,11 +686,18 @@
       });
     }
 
+    function syncUiModeInputs() {
+      uiModeInputs.forEach((input) => {
+        input.checked = input.value === currentUiMode;
+      });
+    }
+
     function applyUiModeVisibility() {
       const showDebugPanels = isDebugMode();
 
       debugSessionPanel.classList.toggle("hidden", !showDebugPanels);
       debugSelectionSummaryPanel.classList.toggle("hidden", !showDebugPanels);
+      debugSelectionPreviewPanel.classList.toggle("hidden", !showDebugPanels);
       debugExtractedDataPanel.classList.toggle("hidden", !showDebugPanels);
 
       demandModeSection.classList.toggle("hidden", isRealMode());
@@ -713,20 +743,45 @@
 
       if (currentDemandMode === "on_demand") {
         return `
-      <div class="explanation-controls">
-        <button
-          class="explanation-toggle-btn"
-          type="button"
-          data-action="toggle-explanation"
-          data-issue-index="${issueIndex}">
-          ${state.explanationVisible ? "Hide Explanation" : "Show Explanation"}
-        </button>
-      </div>
-      ${state.explanationVisible ? renderExplanationContent(issue) : ""}
-    `;
+          <div class="explanation-controls">
+            <button
+              class="explanation-toggle-btn"
+              type="button"
+              data-action="toggle-explanation"
+              data-issue-index="${issueIndex}">
+              ${state.explanationVisible ? "Hide Explanation" : "Show Explanation"}
+            </button>
+          </div>
+          ${state.explanationVisible ? renderExplanationContent(issue) : ""}
+        `;
       }
 
       return state.explanationVisible ? renderExplanationContent(issue) : "";
+    }
+
+    function renderSelectionPreview() {
+      const errorText = latestSelectionImage?.error || "";
+
+      if (!latestSelectionImage || !latestSelectionImage.imageBase64) {
+        selectionPreviewMeta.textContent = errorText
+          ? `Preview export failed: ${errorText}`
+          : "No preview available for the current selection.";
+
+        selectionPreviewImage.classList.add("hidden");
+        selectionPreviewEmpty.classList.remove("hidden");
+        selectionPreviewImage.removeAttribute("src");
+        selectionPreviewEmpty.textContent = errorText
+          ? "Preview export failed."
+          : "No preview available.";
+        return;
+      }
+
+      selectionPreviewMeta.textContent =
+        `Preview ready. Source: ${latestSelectionImage.source || "selection"} | MIME: ${latestSelectionImage.mimeType || "image/png"}`;
+
+      selectionPreviewImage.src = `data:${latestSelectionImage.mimeType || "image/png"};base64,${latestSelectionImage.imageBase64}`;
+      selectionPreviewImage.classList.remove("hidden");
+      selectionPreviewEmpty.classList.add("hidden");
     }
 
     function renderResults(payload) {
@@ -1054,7 +1109,10 @@
       let left = rect.left + rect.width / 2 - bubbleRect.width / 2;
       let top = rect.top - bubbleRect.height - 8;
 
-      if (left < 8) left = 8;
+      if (left < 8) {
+        left = 8;
+      }
+
       if (left + bubbleRect.width > window.innerWidth - 8) {
         left = window.innerWidth - bubbleRect.width - 8;
       }
@@ -1065,6 +1123,7 @@
 
       tooltipBubble.style.left = `${left}px`;
       tooltipBubble.style.top = `${top}px`;
+
       requestAnimationFrame(() => {
         tooltipBubble.classList.add("visible");
       });
@@ -1124,7 +1183,9 @@
     function applyUiModeToInterface() {
       applyUiModeVisibility();
       updateSessionLabel();
+      syncUiModeInputs();
       syncModeInputs();
+      renderSelectionPreview();
       if (latestResults) {
         renderResults(latestResults);
       }
@@ -1132,6 +1193,7 @@
 
     settingsButton.onclick = (event) => {
       event.stopPropagation();
+      syncUiModeInputs();
       syncModeInputs();
       settingsPanel.classList.toggle("hidden");
     };
@@ -1143,6 +1205,25 @@
     document.addEventListener("click", () => {
       settingsPanel.classList.add("hidden");
       hideTooltip();
+    });
+
+    uiModeInputs.forEach((input) => {
+      input.addEventListener("change", (event) => {
+        event.stopPropagation();
+        if (!input.checked) return;
+
+        currentUiMode = input.value;
+
+        parent.postMessage(
+          {
+            pluginMessage: {
+              type: "set-ui-mode",
+              mode: input.value,
+            },
+          },
+          "*"
+        );
+      });
     });
 
     modeInputs.forEach((input) => {
@@ -1195,13 +1276,14 @@
       if (isLoading) return;
 
       errorEl.textContent = "";
-      statusEl.textContent = "Running GPT accessibility check...";
+      statusEl.textContent = "Running accessibility check with structure + preview image...";
       setLoading(true);
 
       postLogEvent({
         eventType: "run_check_click",
         uiMode: currentUiMode,
         demandMode: currentDemandMode,
+        hasSelectionImage: !!latestSelectionImage?.imageBase64,
         timestamp: new Date().toISOString(),
       });
 
@@ -1258,6 +1340,11 @@
         selectionData.textContent = JSON.stringify(data, null, 2);
       }
 
+      if (msg.type === "selection-image") {
+        latestSelectionImage = msg.payload || null;
+        renderSelectionPreview();
+      }
+
       if (msg.type === "status") {
         statusEl.textContent = msg.payload.message || "";
       }
@@ -1295,6 +1382,7 @@
 
     wireDelayedTooltips(document);
     updateSessionLabel();
+    syncUiModeInputs();
     syncModeInputs();
     applyUiModeToInterface();
   </script>

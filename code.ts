@@ -10,7 +10,7 @@ type ExtractedNode = {
 	x?: number;
 	y?: number;
 	text?: string;
-	fontSize?: number | typeof figma.mixed;
+	fontSize?: number;
 	fills?: string[];
 	fingerprint: string;
 };
@@ -23,8 +23,17 @@ type ScreenSummary = {
 type DemandMode = "on_demand" | "low_demand" | "always_visible";
 type UiMode = "debug" | "real";
 
+type SelectionImagePayload = {
+	imageBase64: string | null;
+	mimeType: string;
+	source: string;
+	error?: string | null;
+};
+
 const DEFAULT_DEMAND_MODE: DemandMode = "on_demand";
-const DEFAULT_UI_MODE: UiMode = "real";
+const DEFAULT_UI_MODE: UiMode = "debug";
+const EXPORT_MAX_WIDTH = 1000;
+const TEMP_EXPORT_PADDING = 24;
 
 function getFileKey(): string {
 	return figma.fileKey || "unknown-file";
@@ -168,7 +177,8 @@ function extractNode(node: SceneNode): ExtractedNode {
 
 	if (node.type === "TEXT") {
 		base.text = normalizeText(node.characters);
-		base.fontSize = node.fontSize;
+		base.fontSize =
+			typeof node.fontSize === "number" ? node.fontSize : undefined;
 	}
 
 	return base;
@@ -202,8 +212,174 @@ function collectSelectionData(): ScreenSummary {
 	};
 }
 
+function canExportNode(node: SceneNode): node is SceneNode & ExportMixin {
+	return "exportAsync" in node;
+}
+
+function canCloneNode(
+	node: SceneNode,
+): node is SceneNode & { clone(): SceneNode } {
+	return (
+		typeof (node as SceneNode & { clone?: () => SceneNode }).clone ===
+		"function"
+	);
+}
+
+async function exportNodeAsPngBase64(node: SceneNode): Promise<string> {
+	const nodeName = node.name;
+	const nodeType = node.type;
+
+	if (!canExportNode(node)) {
+		throw new Error(`Node "${nodeName}" (${nodeType}) is not exportable.`);
+	}
+
+	const bytes = await node.exportAsync({
+		format: "PNG",
+		constraint: { type: "WIDTH", value: EXPORT_MAX_WIDTH },
+	});
+
+	return figma.base64Encode(bytes);
+}
+
+async function exportMultiSelectionAsPngBase64(
+	selection: readonly SceneNode[],
+): Promise<string> {
+	const exportableNodes = selection.filter(
+		(node) => canCloneNode(node) && canExportNode(node),
+	);
+
+	if (exportableNodes.length === 0) {
+		throw new Error("No selected nodes could be cloned/exported.");
+	}
+
+	if (exportableNodes.length === 1) {
+		return await exportNodeAsPngBase64(exportableNodes[0]);
+	}
+
+	const minX = Math.min(
+		...exportableNodes.map((node) => ("x" in node ? node.x : 0)),
+	);
+	const minY = Math.min(
+		...exportableNodes.map((node) => ("y" in node ? node.y : 0)),
+	);
+	const maxX = Math.max(
+		...exportableNodes.map((node) =>
+			"x" in node && "width" in node ? node.x + node.width : 0,
+		),
+	);
+	const maxY = Math.max(
+		...exportableNodes.map((node) =>
+			"y" in node && "height" in node ? node.y + node.height : 0,
+		),
+	);
+
+	const frame = figma.createFrame();
+	frame.name = "__temp_accessibility_export__";
+	frame.layoutMode = "NONE";
+	frame.clipsContent = false;
+	frame.fills = [];
+	frame.strokes = [];
+	frame.x = minX;
+	frame.y = minY;
+	frame.resizeWithoutConstraints(
+		Math.max(1, Math.ceil(maxX - minX + TEMP_EXPORT_PADDING * 2)),
+		Math.max(1, Math.ceil(maxY - minY + TEMP_EXPORT_PADDING * 2)),
+	);
+
+	figma.currentPage.appendChild(frame);
+
+	try {
+		for (const node of exportableNodes) {
+			const clone = node.clone();
+			frame.appendChild(clone);
+
+			if ("x" in clone && "x" in node) {
+				clone.x = Math.round(node.x - minX + TEMP_EXPORT_PADDING);
+			}
+			if ("y" in clone && "y" in node) {
+				clone.y = Math.round(node.y - minY + TEMP_EXPORT_PADDING);
+			}
+		}
+
+		const bytes = await frame.exportAsync({
+			format: "PNG",
+			constraint: { type: "WIDTH", value: EXPORT_MAX_WIDTH },
+		});
+
+		return figma.base64Encode(bytes);
+	} finally {
+		frame.remove();
+	}
+}
+
+async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
+	const selection = figma.currentPage.selection;
+
+	if (!selection.length) {
+		return {
+			imageBase64: null,
+			mimeType: "image/png",
+			source: "no_selection",
+			error: "Nothing is selected.",
+		};
+	}
+
+	try {
+		if (selection.length === 1) {
+			const imageBase64 = await exportNodeAsPngBase64(selection[0]);
+			return {
+				imageBase64,
+				mimeType: "image/png",
+				source: "single_node_export",
+				error: null,
+			};
+		}
+
+		try {
+			const imageBase64 =
+				await exportMultiSelectionAsPngBase64(selection);
+			return {
+				imageBase64,
+				mimeType: "image/png",
+				source: "multi_selection_export",
+				error: null,
+			};
+		} catch (multiError) {
+			console.warn(
+				"Multi-selection export failed, falling back to first exportable node:",
+				multiError,
+			);
+
+			const fallbackNode = selection.find(canExportNode);
+			if (!fallbackNode) {
+				throw multiError;
+			}
+
+			const imageBase64 = await exportNodeAsPngBase64(fallbackNode);
+			return {
+				imageBase64,
+				mimeType: "image/png",
+				source: "fallback_first_selected_node",
+				error:
+					multiError instanceof Error
+						? `Multi-selection export failed. Fell back to first selected node. ${multiError.message}`
+						: "Multi-selection export failed. Fell back to first selected node.",
+			};
+		}
+	} catch (error) {
+		return {
+			imageBase64: null,
+			mimeType: "image/png",
+			source: "export_failed",
+			error:
+				error instanceof Error ? error.message : "Unknown export error",
+		};
+	}
+}
+
 async function sendSelectionToUI() {
 	const data = collectSelectionData();
+	const imagePayload = await buildSelectionImagePayload();
 	const userId = await getOrCreateUserId();
 	const demandMode = await getDemandMode();
 	const uiMode = await getUiMode();
@@ -211,6 +387,11 @@ async function sendSelectionToUI() {
 	figma.ui.postMessage({
 		type: "selection-data",
 		payload: data,
+	});
+
+	figma.ui.postMessage({
+		type: "selection-image",
+		payload: imagePayload,
 	});
 
 	figma.ui.postMessage({
@@ -269,10 +450,27 @@ figma.ui.onmessage = async (msg) => {
 
 		figma.ui.postMessage({
 			type: "status",
-			payload: { message: "Sending screen data to backend..." },
+			payload: {
+				message: "Preparing screen structure and selection preview...",
+			},
 		});
 
 		try {
+			const selectionImagePayload = await buildSelectionImagePayload();
+
+			figma.ui.postMessage({
+				type: "selection-image",
+				payload: selectionImagePayload,
+			});
+
+			figma.ui.postMessage({
+				type: "status",
+				payload: {
+					message:
+						"Sending screen data and preview image to backend...",
+				},
+			});
+
 			const response = await fetch("http://localhost:3001/analyze", {
 				method: "POST",
 				headers: {
@@ -286,6 +484,12 @@ figma.ui.onmessage = async (msg) => {
 				},
 				body: JSON.stringify({
 					screen: data,
+					selectionImage: {
+						imageBase64: selectionImagePayload.imageBase64,
+						mimeType: selectionImagePayload.mimeType,
+						source: selectionImagePayload.source,
+						error: selectionImagePayload.error || null,
+					},
 					meta: {
 						sessionId,
 						userId,

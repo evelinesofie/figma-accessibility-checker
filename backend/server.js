@@ -239,12 +239,16 @@ function makeCompactScreen(screen) {
 	};
 }
 
-function buildInitialReviewPrompt(compactScreen) {
+function buildInitialReviewPrompt(compactScreen, hasSelectionImage) {
 	return `
 You are an AI accessibility reviewer for Figma screens.
 
-Your task is to inspect the provided screen structure and identify likely accessibility issues.
-Be useful, grounded, and selective. Focus on the strongest plausible design-level accessibility concerns supported by the provided data.
+Your task is to inspect the provided Figma selection using:
+1. structured screen data with exact node ids and properties
+2. a rendered image preview of the selection, when available
+
+Use the image to improve visual judgment about hierarchy, spacing, readability, and likely contrast.
+Use the structured data as the source of truth for exact node identity, node ids, names, dimensions, text, and colors.
 
 Return ONLY valid JSON with this exact structure:
 
@@ -271,7 +275,9 @@ Return ONLY valid JSON with this exact structure:
 General guidelines:
 - You are reviewing a design mockup, not live code.
 - Focus on issues such as very small text, weak hierarchy, unclear labels, likely color contrast problems, and touch targets that appear too small.
-- Base every issue strictly on evidence visible in the provided data.
+- Base every issue strictly on evidence visible in the provided data and, if available, the rendered preview image.
+- Prefer the structured data for exact details.
+- The image may provide broader visual context, but you must anchor each issue to a real node from the structured data.
 - Do not invent technical details you cannot infer.
 - Return at most 10 issues.
 - Prefer fewer, stronger, better-grounded issues over many weak ones.
@@ -313,10 +319,16 @@ Writing requirements for UI use:
 Contrast-specific guidance:
 - When solid hex colors are available for text and its likely background, treat contrast as a stronger and more reliable signal.
 - If the foreground and background hex colors appear very similar, you may state the contrast concern more confidently.
-- If the available hex values strongly suggest low contrast, explain that the issue is based on the provided color values rather than a visual guess.
+- If the available hex values strongly suggest low contrast, explain that the issue is based on the provided color values rather than only a visual guess.
 - If the background color is unclear, missing, layered, or cannot be reasonably inferred, use more cautious wording such as "may have low contrast" or "contrast is difficult to verify from the available design data."
 - Do not claim exact WCAG compliance or failure unless the provided data makes that judgment reasonably supportable.
 - Prefer grounded contrast judgments from provided hex values over vague visual speculation.
+
+Image-specific guidance:
+- The image is contextual support, not the source of exact ids.
+- If image evidence and structured data appear to conflict, prefer the structured data for factual details.
+- Use the image especially for details that are hard to capture through the structured data.
+- ${hasSelectionImage ? "A rendered preview image is included." : "No preview image is included for this request."}
 
 Uncertainty guidance:
 - Be confident when the data is strong.
@@ -552,74 +564,106 @@ function getChangedFields(previousNode, currentNode) {
 	return changed;
 }
 
-async function analyzeScreenWithModel(compactScreen, nodeIndex, client) {
-	const prompt = buildInitialReviewPrompt(compactScreen);
-
-	const response = await client.responses.create({
-		model: "gpt-5-mini",
-		input: prompt,
-		text: {
-			format: {
-				type: "json_schema",
-				name: "accessibility_review",
-				schema: {
+function buildReviewResponseSchema(name) {
+	return {
+		type: "json_schema",
+		name,
+		schema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				summary: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						summary: {
-							type: "object",
-							additionalProperties: false,
-							properties: {
-								total_nodes: { type: "number" },
-								text_nodes: { type: "number" },
-							},
-							required: ["total_nodes", "text_nodes"],
-						},
-						overall_assessment: { type: "string" },
-						issues: {
-							type: "array",
-							items: {
-								type: "object",
-								additionalProperties: false,
-								properties: {
-									issue_type: {
-										type: "string",
-										enum: [
-											"small_text",
-											"low_contrast",
-											"small_touch_target",
-											"unclear_label",
-											"weak_visual_hierarchy",
-											"other",
-										],
-									},
-									title: { type: "string" },
-									node_name: { type: "string" },
-									node_id: { type: "string" },
-									severity: {
-										type: "string",
-										enum: ["low", "medium", "high"],
-									},
-									explanation: { type: "string" },
-									why_it_matters: { type: "string" },
-									suggestion: { type: "string" },
-								},
-								required: [
-									"issue_type",
-									"title",
-									"node_name",
-									"node_id",
-									"severity",
-									"explanation",
-									"why_it_matters",
-									"suggestion",
+						total_nodes: { type: "number" },
+						text_nodes: { type: "number" },
+					},
+					required: ["total_nodes", "text_nodes"],
+				},
+				overall_assessment: { type: "string" },
+				issues: {
+					type: "array",
+					items: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							issue_type: {
+								type: "string",
+								enum: [
+									"small_text",
+									"low_contrast",
+									"small_touch_target",
+									"unclear_label",
+									"weak_visual_hierarchy",
+									"other",
 								],
 							},
+							title: { type: "string" },
+							node_name: { type: "string" },
+							node_id: { type: "string" },
+							severity: {
+								type: "string",
+								enum: ["low", "medium", "high"],
+							},
+							explanation: { type: "string" },
+							why_it_matters: { type: "string" },
+							suggestion: { type: "string" },
 						},
+						required: [
+							"issue_type",
+							"title",
+							"node_name",
+							"node_id",
+							"severity",
+							"explanation",
+							"why_it_matters",
+							"suggestion",
+						],
 					},
-					required: ["summary", "overall_assessment", "issues"],
 				},
 			},
+			required: ["summary", "overall_assessment", "issues"],
+		},
+	};
+}
+
+async function analyzeScreenWithModel(
+	compactScreen,
+	nodeIndex,
+	client,
+	selectionImage,
+) {
+	const hasSelectionImage =
+		typeof selectionImage?.imageBase64 === "string" &&
+		selectionImage.imageBase64.length > 0;
+
+	const prompt = buildInitialReviewPrompt(compactScreen, hasSelectionImage);
+
+	const content = [
+		{
+			type: "input_text",
+			text: prompt,
+		},
+	];
+
+	if (hasSelectionImage) {
+		content.push({
+			type: "input_image",
+			image_url: `data:${selectionImage.mimeType || "image/png"};base64,${selectionImage.imageBase64}`,
+		});
+	}
+
+	const response = await client.responses.create({
+		model: "gpt-5-mini",
+		input: [
+			{
+				role: "user",
+				content,
+			},
+		],
+		text: {
+			format: buildReviewResponseSchema("accessibility_review"),
 		},
 	});
 
@@ -766,7 +810,7 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "15mb" }));
 
 const client = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
@@ -781,6 +825,7 @@ app.get("/health", (_req, res) => {
 app.post("/analyze", async (req, res) => {
 	try {
 		const compactScreen = makeCompactScreen(req.body.screen);
+		const selectionImage = req.body.selectionImage || null;
 		const nodeIndex = buildNodeIndex(compactScreen);
 
 		const userId = req.headers["x-user-id"] || "unknown";
@@ -802,6 +847,9 @@ app.post("/analyze", async (req, res) => {
 			selectionCount: compactScreen.selectionCount,
 			totalNodes: compactScreen.totalNodes,
 			textNodes: compactScreen.textNodes,
+			hasSelectionImage:
+				typeof selectionImage?.imageBase64 === "string" &&
+				selectionImage.imageBase64.length > 0,
 			timestamp: new Date().toISOString(),
 		});
 
@@ -877,6 +925,7 @@ app.post("/analyze", async (req, res) => {
 				subScreen,
 				subNodeIndex,
 				client,
+				selectionImage,
 			);
 
 			newNodeIssues = analysis.issues;
@@ -1022,6 +1071,9 @@ app.post("/analyze", async (req, res) => {
 				newNodesToReview.length -
 				changedNodesToReview.length,
 			changedNodeSummaries,
+			hasSelectionImage:
+				typeof selectionImage?.imageBase64 === "string" &&
+				selectionImage.imageBase64.length > 0,
 			overallAssessment: parsed.overall_assessment || "",
 			timestamp: new Date().toISOString(),
 		});
