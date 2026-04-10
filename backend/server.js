@@ -243,7 +243,7 @@ function buildInitialReviewPrompt(compactScreen, hasSelectionImage) {
 	return `
 You are an AI accessibility reviewer for Figma screens.
 
-Your task is to inspect the provided Figma selection using:
+Review the provided Figma selection using:
 1. structured screen data with exact node ids and properties
 2. a rendered image preview of the selection, when available
 
@@ -272,90 +272,44 @@ Return ONLY valid JSON with this exact structure:
   ]
 }
 
-General guidelines:
-- You are reviewing a design mockup, not live code.
-- Focus on issues such as very small text, weak hierarchy, unclear labels, likely color contrast problems, and touch targets that appear too small.
-- Base every issue strictly on evidence visible in the provided data and, if available, the rendered preview image.
-- Prefer the structured data for exact details.
-- The image may provide broader visual context, but you must anchor each issue to a real node from the structured data.
-- Do not invent technical details you cannot infer.
-- Return at most 10 issues.
-- Prefer fewer, stronger, better-grounded issues over many weak ones.
-- If there are no clear issues, return an empty issues array and a short overall assessment.
-- Only report issues that can be meaningfully improved in the Figma design itself.
-- Do not report implementation-only or code-only accessibility issues.
-- Exclude issues such as missing alt text, ARIA attributes, semantic HTML structure, keyboard event handling, screen reader roles, or other properties that cannot be directly fixed in Figma.
-- If an issue depends mainly on front-end code rather than the design mockup, do not include it.
+Rules:
+- Review a design mockup, not live code.
+- Only report issues that can be fixed in Figma.
+- Do not report code-only issues like alt text, ARIA, semantic HTML, keyboard handlers, or screen reader roles.
+- Each issue must be tied to exactly one real node from the provided screen data.
+- node_id must exactly match a node id from the provided data.
+- node_name must exactly match that node's name.
+- Do not report duplicate issue types for the same node.
+- Return at most 10 strong, grounded issues.
+- Prefer fewer, better-supported issues over many weak ones.
+- If there are no clear issues, return an empty issues array.
+- Use cautious wording when evidence is incomplete.
 
-Figma-fixable issue guidance:
-- Include only issues that a designer could act on by changing text, color, size, spacing, labels, hierarchy, or visual structure in the mockup.
-- Exclude issues that require developer implementation, content management settings, or code-level semantics.
+Use these issue types only:
+- "small_text"
+- "low_contrast"
+- "small_touch_target"
+- "unclear_label"
+- "weak_visual_hierarchy"
+- "other"
 
-Node anchoring requirements:
-- Each issue must be tied to ONE specific node.
-- node_id must exactly match the "id" field of a node from the provided screen data.
-- node_name must exactly match the "name" field of that same node.
-- Do not invent or modify node_id or node_name.
-- Always select the most relevant node for the issue.
-
-Issue deduplication requirements:
-- Do not report multiple issues of the same issue_type for the same node.
-- Do not create near-duplicate issues that describe the same underlying problem in slightly different words.
-- If several possible concerns exist on one node, choose the single most important one unless a second issue is clearly distinct and strongly justified.
-
-Issue typing:
-- issue_type must be exactly one of:
-  "small_text", "low_contrast", "small_touch_target", "unclear_label", "weak_visual_hierarchy", "other"
-- Do not invent new issue types.
-
-Writing requirements for UI use:
-- title must be short, concrete, and descriptive.
-- Prefer element-first titles such as "Button has no visible text label" or "Text may have low contrast".
-- explanation should briefly describe what is wrong in 1–2 sentences.
-- why_it_matters should briefly explain the user impact in 1–2 sentences.
-- suggestion should be a short, actionable fix line suitable for showing directly on the issue card.
-- Avoid debug-style wording, internal system language, code references, or implementation details.
-
-Contrast-specific guidance:
-- When solid hex colors are available for text and its likely background, treat contrast as a stronger and more reliable signal.
-- If the foreground and background hex colors appear very similar, you may state the contrast concern more confidently.
-- If the available hex values strongly suggest low contrast, explain that the issue is based on the provided color values rather than only a visual guess.
-- If the background color is unclear, missing, layered, or cannot be reasonably inferred, use more cautious wording such as "may have low contrast" or "contrast is difficult to verify from the available design data."
-- Do not claim exact WCAG compliance or failure unless the provided data makes that judgment reasonably supportable.
-- Prefer grounded contrast judgments from provided hex values over vague visual speculation.
-
-Image-specific guidance:
-- The image is contextual support, not the source of exact ids.
-- If image evidence and structured data appear to conflict, prefer the structured data for factual details.
-- Use the image especially for details that are hard to capture through the structured data.
-- ${hasSelectionImage ? "A rendered preview image is included." : "No preview image is included for this request."}
-
-Uncertainty guidance:
-- Be confident when the data is strong.
-- Be cautious when the data is incomplete.
-- If evidence is weak, do not report the issue.
-
-Tone:
-- Keep explanations clear, practical, and designer-friendly.
+Image note:
+- ${hasSelectionImage ? "A rendered preview image is included." : "No preview image is included."}
+- Use the image for context, but use the structured data for exact ids and properties.
 
 Screen data:
 ${JSON.stringify(compactScreen, null, 2)}
   `.trim();
 }
 
-function buildNodeUpdatePrompt({
-	previousNode,
-	currentNode,
-	previousIssues,
-	changedFields,
-}) {
+function buildBatchNodeUpdatePrompt(changedNodes) {
 	return `
-You are updating a previous AI accessibility review for a single Figma node.
+You are updating a previous AI accessibility review for multiple changed Figma nodes.
 
 Important goal: preserve review stability.
 A small edit should not cause unrelated issue types to appear for the first time.
 
-You must review the CURRENT node, but you must do so in light of:
+For each changed node, review the CURRENT node in light of:
 - the PREVIOUS version of the node
 - the PREVIOUS issues already reported for that same node
 - the list of changed fields
@@ -364,61 +318,47 @@ Return ONLY valid JSON with this exact structure:
 
 {
   "overall_assessment": string,
-  "issues": [
+  "updated_nodes": [
     {
-      "issue_type": "small_text" | "low_contrast" | "small_touch_target" | "unclear_label" | "weak_visual_hierarchy" | "other",
-      "title": string,
-      "node_name": string,
       "node_id": string,
-      "severity": "low" | "medium" | "high",
-      "explanation": string,
-      "why_it_matters": string,
-      "suggestion": string
+      "node_name": string,
+      "issues": [
+        {
+          "issue_type": "small_text" | "low_contrast" | "small_touch_target" | "unclear_label" | "weak_visual_hierarchy" | "other",
+          "title": string,
+          "node_name": string,
+          "node_id": string,
+          "severity": "low" | "medium" | "high",
+          "explanation": string,
+          "why_it_matters": string,
+          "suggestion": string
+        }
+      ]
     }
   ]
 }
 
 Critical stability rules:
 - Start from the previous issue set as the baseline.
-- Preserve previous issue judgments unless the actual change makes them no longer valid or materially changes their severity/explanation.
+- Preserve previous issue judgments unless the actual change makes them no longer valid or materially changes their severity or explanation.
 - Do NOT introduce a new unrelated issue type just because you now notice something that was already present before.
 - New issue types should appear only when they are plausibly caused, revealed, or strongly justified by the changed fields.
 - If only colors changed, avoid introducing size-related or labeling-related issues unless the current data clearly makes that necessary because of the change itself.
 - If only text changed, avoid introducing unrelated size or contrast issues unless the change plausibly affects them.
 - If evidence remains weak, keep the prior judgment stable.
 
-General guidelines:
-- You are reviewing a design mockup, not live code.
-- Only report issues that can be meaningfully improved in the Figma design itself.
-- Do not report implementation-only or code-only accessibility issues.
-- Exclude issues such as missing alt text, ARIA attributes, semantic HTML structure, keyboard event handling, screen reader roles, or other properties that cannot be directly fixed in Figma.
-- Each issue must be tied to this one node only.
+General rules:
+- Review a design mockup, not live code.
+- Only report issues that can be fixed in Figma.
+- Do not report code-only issues like alt text, ARIA, semantic HTML, keyboard handlers, or screen reader roles.
+- Each issue must be tied to that exact node only.
 - node_id must exactly match the current node id.
 - node_name must exactly match the current node name.
 - Do not report duplicate issue types for the same node.
-- Return only the strongest justified issues for this node.
+- A node may return zero issues if no issue remains justified.
 
-Issue typing:
-- issue_type must be exactly one of:
-  "small_text", "low_contrast", "small_touch_target", "unclear_label", "weak_visual_hierarchy", "other"
-
-Writing requirements:
-- title must be short, concrete, and descriptive.
-- explanation should briefly describe what is wrong in 1–2 sentences.
-- why_it_matters should briefly explain the user impact in 1–2 sentences.
-- suggestion should be a short, actionable fix line suitable for showing directly on the issue card.
-
-Previous node:
-${JSON.stringify(previousNode, null, 2)}
-
-Current node:
-${JSON.stringify(currentNode, null, 2)}
-
-Changed fields:
-${JSON.stringify(changedFields, null, 2)}
-
-Previous issues for this node:
-${JSON.stringify(previousIssues, null, 2)}
+Changed nodes:
+${JSON.stringify(changedNodes, null, 2)}
   `.trim();
 }
 
@@ -628,6 +568,73 @@ function buildReviewResponseSchema(name) {
 	};
 }
 
+function buildBatchUpdateResponseSchema() {
+	return {
+		type: "json_schema",
+		name: "accessibility_review_batch_update",
+		schema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				overall_assessment: { type: "string" },
+				updated_nodes: {
+					type: "array",
+					items: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							node_id: { type: "string" },
+							node_name: { type: "string" },
+							issues: {
+								type: "array",
+								items: {
+									type: "object",
+									additionalProperties: false,
+									properties: {
+										issue_type: {
+											type: "string",
+											enum: [
+												"small_text",
+												"low_contrast",
+												"small_touch_target",
+												"unclear_label",
+												"weak_visual_hierarchy",
+												"other",
+											],
+										},
+										title: { type: "string" },
+										node_name: { type: "string" },
+										node_id: { type: "string" },
+										severity: {
+											type: "string",
+											enum: ["low", "medium", "high"],
+										},
+										explanation: { type: "string" },
+										why_it_matters: { type: "string" },
+										suggestion: { type: "string" },
+									},
+									required: [
+										"issue_type",
+										"title",
+										"node_name",
+										"node_id",
+										"severity",
+										"explanation",
+										"why_it_matters",
+										"suggestion",
+									],
+								},
+							},
+						},
+						required: ["node_id", "node_name", "issues"],
+					},
+				},
+			},
+			required: ["overall_assessment", "updated_nodes"],
+		},
+	};
+}
+
 async function analyzeScreenWithModel(
 	compactScreen,
 	nodeIndex,
@@ -655,7 +662,7 @@ async function analyzeScreenWithModel(
 	}
 
 	const response = await client.responses.create({
-		model: "gpt-5-mini",
+		model: "gpt-5.4-mini",
 		input: [
 			{
 				role: "user",
@@ -688,97 +695,72 @@ async function analyzeScreenWithModel(
 	};
 }
 
-async function updateNodeReviewWithModel({
-	previousNode,
-	currentNode,
-	previousIssues,
-	client,
-}) {
-	const changedFields = getChangedFields(previousNode, currentNode);
-	const singleNodeScreen = {
-		selectionCount: 1,
-		totalNodes: 1,
-		textNodes: currentNode.type === "TEXT" ? 1 : 0,
-		nodes: [currentNode],
-	};
-	const nodeIndex = buildNodeIndex(singleNodeScreen);
+async function updateChangedNodesWithModel({ changedNodes, client }) {
+	if (!Array.isArray(changedNodes) || changedNodes.length === 0) {
+		return {
+			overall_assessment: "",
+			updatedNodes: [],
+		};
+	}
 
-	const prompt = buildNodeUpdatePrompt({
-		previousNode,
-		currentNode,
-		previousIssues,
-		changedFields,
-	});
+	const normalizedChangedNodes = changedNodes.map((item) => ({
+		node_id: item.currentNode.id,
+		node_name: item.currentNode.name,
+		previousNode: item.previousNode,
+		currentNode: item.currentNode,
+		changedFields: item.changedFields,
+		previousIssues: item.previousIssues,
+	}));
+
+	const prompt = buildBatchNodeUpdatePrompt(normalizedChangedNodes);
 
 	const response = await client.responses.create({
 		model: "gpt-5-mini",
 		input: prompt,
 		text: {
-			format: {
-				type: "json_schema",
-				name: "accessibility_review_update",
-				schema: {
-					type: "object",
-					additionalProperties: false,
-					properties: {
-						overall_assessment: { type: "string" },
-						issues: {
-							type: "array",
-							items: {
-								type: "object",
-								additionalProperties: false,
-								properties: {
-									issue_type: {
-										type: "string",
-										enum: [
-											"small_text",
-											"low_contrast",
-											"small_touch_target",
-											"unclear_label",
-											"weak_visual_hierarchy",
-											"other",
-										],
-									},
-									title: { type: "string" },
-									node_name: { type: "string" },
-									node_id: { type: "string" },
-									severity: {
-										type: "string",
-										enum: ["low", "medium", "high"],
-									},
-									explanation: { type: "string" },
-									why_it_matters: { type: "string" },
-									suggestion: { type: "string" },
-								},
-								required: [
-									"issue_type",
-									"title",
-									"node_name",
-									"node_id",
-									"severity",
-									"explanation",
-									"why_it_matters",
-									"suggestion",
-								],
-							},
-						},
-					},
-					required: ["overall_assessment", "issues"],
-				},
-			},
+			format: buildBatchUpdateResponseSchema(),
 		},
 	});
 
 	const parsed = JSON.parse(response.output_text);
-	const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
-	const normalizedIssues = rawIssues
-		.map((issue) => normalizeIssue(issue, nodeIndex))
-		.filter(Boolean);
+	const updatedNodesRaw = Array.isArray(parsed.updated_nodes)
+		? parsed.updated_nodes
+		: [];
+
+	const resultByNodeId = new Map();
+
+	for (const item of changedNodes) {
+		const singleNodeScreen = {
+			selectionCount: 1,
+			totalNodes: 1,
+			textNodes: item.currentNode.type === "TEXT" ? 1 : 0,
+			nodes: [item.currentNode],
+		};
+		const nodeIndex = buildNodeIndex(singleNodeScreen);
+
+		const matchingRaw = updatedNodesRaw.find(
+			(entry) => entry && entry.node_id === item.currentNode.id,
+		);
+
+		const rawIssues = Array.isArray(matchingRaw?.issues)
+			? matchingRaw.issues
+			: [];
+
+		const normalizedIssues = rawIssues
+			.map((issue) => normalizeIssue(issue, nodeIndex))
+			.filter(Boolean);
+
+		resultByNodeId.set(item.currentNode.id, {
+			nodeId: item.currentNode.id,
+			nodeName: item.currentNode.name,
+			issues: dedupeIssues(normalizedIssues),
+			changedFields: item.changedFields,
+		});
+	}
 
 	return {
 		overall_assessment: parsed.overall_assessment || "",
-		issues: dedupeIssues(normalizedIssues),
-		changedFields,
+		updatedNodes: Array.from(resultByNodeId.values()),
 	};
 }
 
@@ -890,19 +872,24 @@ app.post("/analyze", async (req, res) => {
 				continue;
 			}
 
+			const currentNode = extractComparableNodeSnapshot(node);
+			const previousNode =
+				extractComparableNodeSnapshot(cachedEntry.nodeSnapshot) ||
+				extractComparableNodeSnapshot({
+					id: cachedEntry.nodeId,
+					name: cachedEntry.nodeName,
+					...cachedEntry.nodeSnapshot,
+				}) ||
+				currentNode;
+
 			changedNodesToReview.push({
-				currentNode: node,
-				previousNode:
-					extractComparableNodeSnapshot(cachedEntry.nodeSnapshot) ||
-					extractComparableNodeSnapshot({
-						id: cachedEntry.nodeId,
-						name: cachedEntry.nodeName,
-						...cachedEntry.nodeSnapshot,
-					}),
+				currentNode,
+				previousNode,
 				previousIssues: Array.isArray(cachedEntry.issues)
 					? cachedEntry.issues
 					: [],
 				previousFingerprint: cachedEntry.fingerprint || null,
+				changedFields: getChangedFields(previousNode, currentNode),
 			});
 		}
 
@@ -958,29 +945,33 @@ app.post("/analyze", async (req, res) => {
 		}
 
 		if (changedNodesToReview.length > 0) {
-			for (const item of changedNodesToReview) {
-				const currentNode = extractComparableNodeSnapshot(
-					item.currentNode,
+			const updatedBatch = await updateChangedNodesWithModel({
+				changedNodes: changedNodesToReview,
+				client,
+			});
+
+			if (!overallAssessment) {
+				overallAssessment = updatedBatch.overall_assessment || "";
+			}
+
+			for (const updatedNode of updatedBatch.updatedNodes) {
+				changedNodeIssues.push(...updatedNode.issues);
+
+				const originalItem = changedNodesToReview.find(
+					(item) => item.currentNode.id === updatedNode.nodeId,
 				);
-				const previousNode =
-					item.previousNode ||
-					extractComparableNodeSnapshot(item.currentNode);
 
-				const updated = await updateNodeReviewWithModel({
-					previousNode,
-					currentNode,
-					previousIssues: item.previousIssues,
-					client,
-				});
-
-				changedNodeIssues.push(...updated.issues);
 				changedNodeSummaries.push({
-					nodeId: currentNode.id,
-					nodeName: currentNode.name,
-					changedFields: updated.changedFields,
-					previousIssueCount: item.previousIssues.length,
-					updatedIssueCount: updated.issues.length,
+					nodeId: updatedNode.nodeId,
+					nodeName: updatedNode.nodeName,
+					changedFields: updatedNode.changedFields,
+					previousIssueCount:
+						originalItem?.previousIssues?.length || 0,
+					updatedIssueCount: updatedNode.issues.length,
 				});
+
+				const currentNode = originalItem?.currentNode;
+				if (!currentNode) continue;
 
 				const currentFingerprint =
 					typeof currentNode.fingerprint === "string" &&
@@ -993,7 +984,7 @@ app.post("/analyze", async (req, res) => {
 					nodeName: currentNode.name,
 					fingerprint: currentFingerprint,
 					nodeSnapshot: extractComparableNodeSnapshot(currentNode),
-					issues: updated.issues,
+					issues: updatedNode.issues,
 					reviewedAt: new Date().toISOString(),
 				};
 			}
@@ -1046,7 +1037,7 @@ app.post("/analyze", async (req, res) => {
 					? "No element changes detected since the last check. Reusing existing issue results for the current selection."
 					: changedNodesToReview.length > 0 &&
 						  newNodesToReview.length === 0
-						? "Updated issues for changed elements using the previous review as context and reused results for unchanged elements."
+						? "Updated issues for changed elements in one batch and reused results for unchanged elements."
 						: visibleIssues.length === 0
 							? "Issues reviewed for new or changed elements. No visible issues to show after filtering."
 							: "Issues updated for new or changed elements and reused for unchanged elements."),
