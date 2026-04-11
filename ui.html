@@ -203,6 +203,64 @@
       display: none !important;
     }
 
+    .adaptivity-toast {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      z-index: 9998;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--accent-border);
+      border-radius: 10px;
+      background: var(--accent-soft);
+      color: #1f2937;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+    }
+
+    .adaptivity-toast-content {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .adaptivity-toast-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent-text);
+      margin-bottom: 2px;
+    }
+
+    .adaptivity-toast-message {
+      font-size: 12px;
+      line-height: 1.4;
+      color: #374151;
+    }
+
+    .adaptivity-toast-close {
+      border: none;
+      background: transparent;
+      color: #666;
+      padding: 0;
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .adaptivity-toast-close:hover {
+      background: rgba(0, 0, 0, 0.05);
+      color: #222;
+    }
+
     .results-meta {
       margin-bottom: 12px;
     }
@@ -541,6 +599,16 @@
     </div>
   </div>
 
+  <div id="adaptivityToast" class="adaptivity-toast hidden" role="status" aria-live="polite">
+    <div class="adaptivity-toast-content">
+      <div class="adaptivity-toast-title">Adaptive mode updated</div>
+      <div id="adaptivityToastMessage" class="adaptivity-toast-message"></div>
+    </div>
+    <button id="adaptivityToastClose" class="adaptivity-toast-close" type="button" aria-label="Dismiss message">
+      ×
+    </button>
+  </div>
+
   <div class="row">
     <button id="checkBtn">Check for Issues</button>
   </div>
@@ -584,6 +652,13 @@
     let uiReady = false;
     const condition = "ui_mode_prototype";
 
+    // === ADAPTIVITY STATE ===
+    let calibrationOpportunities = [];
+    let calibrationCompletedCount = 0;
+    let calibrationOpens = 0;
+    let activeCalibrationOpportunity = null;
+    let demandModeAssigned = false;
+
     const selectionSummary = document.getElementById("selectionSummary");
     const selectionData = document.getElementById("selectionData");
     const selectionPreviewMeta = document.getElementById("selectionPreviewMeta");
@@ -606,6 +681,11 @@
     const debugSelectionSummaryPanel = document.getElementById("debugSelectionSummaryPanel");
     const debugSelectionPreviewPanel = document.getElementById("debugSelectionPreviewPanel");
     const debugExtractedDataPanel = document.getElementById("debugExtractedDataPanel");
+    const adaptivityToast = document.getElementById("adaptivityToast");
+    const adaptivityToastMessage = document.getElementById("adaptivityToastMessage");
+    const adaptivityToastClose = document.getElementById("adaptivityToastClose");
+
+    let adaptivityToastTimer = null;
 
     function createId(prefix) {
       return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
@@ -653,6 +733,44 @@
     function updateSessionLabel() {
       sessionIdEl.textContent =
         `User: ${userId} | Session: ${sessionId} | Condition: ${condition} | UI Mode: ${currentUiMode} | Mode: ${currentDemandMode}`;
+    }
+
+    function showAdaptivityToast(mode) {
+      if (!adaptivityToast || !adaptivityToastMessage) return;
+
+      let message = "";
+
+      if (mode === "always_visible") {
+        message =
+          "Explanations will now be shown automatically to better match your workflow.";
+      } else if (mode === "low_demand") {
+        message =
+          "Explanations will now stay more minimal, but remain available whenever you need them.";
+      } else {
+        return;
+      }
+
+      adaptivityToastMessage.textContent = message;
+      adaptivityToast.classList.remove("hidden");
+      adaptivityToast.offsetHeight;
+
+      if (adaptivityToastTimer) {
+        clearTimeout(adaptivityToastTimer);
+      }
+
+      adaptivityToastTimer = window.setTimeout(() => {
+        adaptivityToast.classList.add("hidden");
+        adaptivityToastTimer = null;
+      }, 10000);
+    }
+
+    function hideAdaptivityToast() {
+      if (!adaptivityToast) return;
+      if (adaptivityToastTimer) {
+        clearTimeout(adaptivityToastTimer);
+        adaptivityToastTimer = null;
+      }
+      adaptivityToast.classList.add("hidden");
     }
 
     function postLogEvent(event) {
@@ -728,12 +846,12 @@
 
     function renderExplanationContent(issue) {
       return `
-        <div class="explanation-box">
-          <div class="issue-section-label">Explanation</div>
-          <p>${escapeHtml(issue.explanation || "")}</p>
-          <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
-        </div>
-      `;
+      <div class="explanation-box">
+        <div class="issue-section-label">Explanation</div>
+        <p>${escapeHtml(issue.explanation || "")}</p>
+        <p><strong>Why it matters:</strong> ${escapeHtml(issue.why_it_matters || "")}</p>
+      </div>
+    `;
     }
 
     function renderExplanationControls(issue, issueIndex, state) {
@@ -743,21 +861,26 @@
 
       if (currentDemandMode === "on_demand") {
         return `
-          <div class="explanation-controls">
-            <button
-              class="explanation-toggle-btn"
-              type="button"
-              data-action="toggle-explanation"
-              data-issue-index="${issueIndex}">
-              ${state.explanationVisible ? "Hide Explanation" : "Show Explanation"}
-            </button>
-          </div>
-          ${state.explanationVisible ? renderExplanationContent(issue) : ""}
-        `;
+        <div class="explanation-controls">
+          <button
+            class="explanation-toggle-btn"
+            type="button"
+            data-action="toggle-explanation"
+            data-issue-index="${issueIndex}">
+            ${state.explanationVisible ? "Hide Explanation" : "Show Explanation"}
+          </button>
+        </div>
+        ${state.explanationVisible ? renderExplanationContent(issue) : ""}
+      `;
       }
 
       return state.explanationVisible ? renderExplanationContent(issue) : "";
     }
+
+    adaptivityToastClose.onclick = (event) => {
+      event.stopPropagation();
+      hideAdaptivityToast();
+    };
 
     function renderSelectionPreview() {
       const errorText = latestSelectionImage?.error || "";
@@ -795,93 +918,93 @@
 
       if (!issues.length) {
         results.innerHTML = `
-          <div>No issues returned.</div>
-          <div class="muted">${escapeHtml(overall)}</div>
-        `;
+        <div>No issues returned.</div>
+        <div class="muted">${escapeHtml(overall)}</div>
+      `;
         return;
       }
 
       results.innerHTML = `
-        <div class="results-meta muted">
-          Total nodes: ${summary.total_nodes ?? "?"}<br>
-          Text nodes: ${summary.text_nodes ?? "?"}<br>
-          Issues found: ${issues.length}
-        </div>
-        ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
-        ${issues.map((issue, index) => {
+      <div class="results-meta muted">
+        Total nodes: ${summary.total_nodes ?? "?"}<br>
+        Text nodes: ${summary.text_nodes ?? "?"}<br>
+        Issues found: ${issues.length}
+      </div>
+      ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
+      ${issues.map((issue, index) => {
         const state = ensureIssueState(issue);
         const expandedClass = state.expanded ? "issue-expanded" : "";
 
         return `
-            <div class="issue ${expandedClass}" data-issue-index="${index}">
-              <div class="issue-header" data-action="toggle-expand" data-issue-index="${index}">
-                <button
-                  class="icon-button issue-expand-btn ${state.expanded ? "is-expanded" : ""}"
-                  type="button"
-                  data-action="toggle-expand"
-                  data-issue-index="${index}"
-                  aria-label="${state.expanded ? "Collapse issue" : "Expand issue"}"
-                  data-tooltip="${state.expanded ? "Collapse issue" : "Expand issue"}">
-                  <svg class="issue-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <polyline points="9 6 15 12 9 18"></polyline>
-                  </svg>
-                </button>
+          <div class="issue ${expandedClass}" data-issue-index="${index}">
+            <div class="issue-header" data-action="toggle-expand" data-issue-index="${index}">
+              <button
+                class="icon-button issue-expand-btn ${state.expanded ? "is-expanded" : ""}"
+                type="button"
+                data-action="toggle-expand"
+                data-issue-index="${index}"
+                aria-label="${state.expanded ? "Collapse issue" : "Expand issue"}"
+                data-tooltip="${state.expanded ? "Collapse issue" : "Expand issue"}">
+                <svg class="issue-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="9 6 15 12 9 18"></polyline>
+                </svg>
+              </button>
 
-                <div class="issue-title-wrap">
-                  <div class="issue-title">${escapeHtml(issue.title || "Untitled issue")}</div>
-                  <div class="issue-element">Element: ${escapeHtml(issue.node_name || "Unknown")}</div>
-                  <div class="severity ${severityClass(issue.severity)}">${escapeHtml(issue.severity || "unknown")}</div>
-                </div>
-
-                <div class="issue-header-actions">
-                  <button
-                    class="icon-button"
-                    type="button"
-                    data-action="go-to-element"
-                    data-issue-index="${index}"
-                    aria-label="Go to element"
-                    data-tooltip="Go to element">
-                    <span aria-hidden="true">↗</span>
-                  </button>
-
-                  <button
-                    class="icon-button"
-                    type="button"
-                    data-action="resolve-issue"
-                    data-issue-index="${index}"
-                    aria-label="Mark as resolved"
-                    data-tooltip="Mark as resolved">
-                    <span aria-hidden="true">✓</span>
-                  </button>
-                </div>
+              <div class="issue-title-wrap">
+                <div class="issue-title">${escapeHtml(issue.title || "Untitled issue")}</div>
+                <div class="issue-element">Element: ${escapeHtml(issue.node_name || "Unknown")}</div>
+                <div class="severity ${severityClass(issue.severity)}">${escapeHtml(issue.severity || "unknown")}</div>
               </div>
 
-              ${state.expanded ? `
-                <div class="issue-body">
-                  <div class="fix-box">
-                    ${currentDemandMode === "low_demand" ? `
-                      <button
-                        class="questionmark-btn fix-overlay-btn ${state.visitCount >= 3 && !state.everOpenedExplanation ? "attention-nudge" : ""}"
-                        type="button"
-                        data-action="toggle-explanation"
-                        data-issue-index="${index}"
-                        aria-label="Show explanation"
-                        data-tooltip="Show explanation">
-                        ?
-                      </button>
-                    ` : ""}
+              <div class="issue-header-actions">
+                <button
+                  class="icon-button"
+                  type="button"
+                  data-action="go-to-element"
+                  data-issue-index="${index}"
+                  aria-label="Go to element"
+                  data-tooltip="Go to element">
+                  <span aria-hidden="true">↗</span>
+                </button>
 
-                    <div class="issue-section-label">How To Fix It</div>
-                    <div>${escapeHtml(issue.suggestion || "")}</div>
-                  </div>
-                  ${renderExplanationControls(issue, index, state)}
-                </div>
-              ` : ""}
+                <button
+                  class="icon-button"
+                  type="button"
+                  data-action="resolve-issue"
+                  data-issue-index="${index}"
+                  aria-label="Mark as resolved"
+                  data-tooltip="Mark as resolved">
+                  <span aria-hidden="true">✓</span>
+                </button>
+              </div>
             </div>
-          `;
+
+            ${state.expanded ? `
+              <div class="issue-body">
+                <div class="fix-box">
+                  ${currentDemandMode === "low_demand" ? `
+                    <button
+                      class="questionmark-btn fix-overlay-btn ${state.visitCount >= 3 && !state.everOpenedExplanation ? "attention-nudge" : ""}"
+                      type="button"
+                      data-action="toggle-explanation"
+                      data-issue-index="${index}"
+                      aria-label="Show explanation"
+                      data-tooltip="Show explanation">
+                      ?
+                    </button>
+                  ` : ""}
+
+                  <div class="issue-section-label">How To Fix It</div>
+                  <div>${escapeHtml(issue.suggestion || "")}</div>
+                </div>
+                ${renderExplanationControls(issue, index, state)}
+              </div>
+            ` : ""}
+          </div>
+        `;
       }).join("")}
-      `;
+    `;
 
       attachResultsHandlers();
       wireDelayedTooltips(results);
@@ -897,16 +1020,155 @@
       });
     }
 
+    function canCalibrate() {
+      return isRealMode() && currentDemandMode === "on_demand" && !demandModeAssigned;
+    }
+
+    function finalizeActiveCalibrationOpportunity(reason) {
+      if (!activeCalibrationOpportunity) return;
+      if (activeCalibrationOpportunity.finalized) return;
+
+      activeCalibrationOpportunity.finalized = true;
+      calibrationCompletedCount += 1;
+
+      logIssueEvent({
+        eventType: "calibration_opportunity_finalized",
+        opportunityIndex: activeCalibrationOpportunity.opportunityIndex,
+        issueIndex: activeCalibrationOpportunity.issueIndex,
+        issueKey: activeCalibrationOpportunity.issueKey,
+        opened: activeCalibrationOpportunity.opened,
+        finalizeReason: reason,
+        completedCount: calibrationCompletedCount
+      });
+
+      activeCalibrationOpportunity = null;
+      maybeAssignDemandMode();
+    }
+
+    function maybeStartCalibrationOpportunity(issueIndex, issue) {
+      if (!canCalibrate()) return;
+      if (calibrationCompletedCount >= 5) return;
+      if (activeCalibrationOpportunity) return;
+
+      const issueKey = getIssueKey(issue);
+      const opportunityIndex = calibrationCompletedCount + 1;
+
+      const opportunity = {
+        opportunityIndex,
+        issueIndex,
+        issueKey,
+        opened: false,
+        finalized: false
+      };
+
+      calibrationOpportunities.push(opportunity);
+      activeCalibrationOpportunity = opportunity;
+
+      logIssueEvent({
+        eventType: "calibration_opportunity_started",
+        opportunityIndex,
+        issueIndex,
+        issueKey
+      });
+    }
+
+    function maybeRecordCalibrationOpen(issueIndex, issue) {
+      if (!canCalibrate()) return;
+      if (!activeCalibrationOpportunity) return;
+      if (activeCalibrationOpportunity.finalized) return;
+
+      const issueKey = getIssueKey(issue);
+
+      if (activeCalibrationOpportunity.issueKey !== issueKey) {
+        return;
+      }
+
+      if (activeCalibrationOpportunity.opened) {
+        return;
+      }
+
+      activeCalibrationOpportunity.opened = true;
+      calibrationOpens += 1;
+
+      logIssueEvent({
+        eventType: "calibration_open",
+        opportunityIndex: activeCalibrationOpportunity.opportunityIndex,
+        issueIndex,
+        issueKey,
+        totalOpens: calibrationOpens
+      });
+    }
+
+    function maybeAssignDemandMode() {
+      if (demandModeAssigned) return;
+      if (!isRealMode()) return;
+      if (calibrationCompletedCount < 5) return;
+
+      const rate = calibrationOpens / 5;
+      const newMode = rate < 0.5 ? "low_demand" : "always_visible";
+
+      // Apply locally first so the UI definitely changes immediately
+      demandModeAssigned = true;
+      currentDemandMode = newMode;
+      showAdaptivityToast(newMode);
+
+      syncModeInputs();
+      applyDemandModeToInterface();
+
+      // Then persist to plugin code
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "set-demand-mode",
+            mode: newMode,
+            sessionId,
+            userId,
+            condition,
+            reason: "threshold_rule_adaptation",
+            calibrationRate: rate
+          },
+        },
+        "*"
+      );
+
+      postLogEvent({
+        eventType: "adaptive_mode_assigned",
+        assignedMode: newMode,
+        calibrationRate: rate,
+        completedOpportunities: calibrationCompletedCount,
+        opens: calibrationOpens,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     function handleToggleExpand(issueIndex) {
       const issue = latestResults?.issues?.[issueIndex];
       if (!issue) return;
 
       const state = ensureIssueState(issue);
+      const wasExpanded = state.expanded;
       state.expanded = !state.expanded;
 
       const button = results.querySelector(
         `.issue-expand-btn[data-issue-index="${issueIndex}"]`
       );
+
+      if (state.expanded && !wasExpanded) {
+        if (activeCalibrationOpportunity) {
+          finalizeActiveCalibrationOpportunity("moved_to_another_issue");
+        }
+        maybeStartCalibrationOpportunity(issueIndex, issue);
+      }
+
+      if (!state.expanded && wasExpanded) {
+        const issueKey = getIssueKey(issue);
+        if (
+          activeCalibrationOpportunity &&
+          activeCalibrationOpportunity.issueKey === issueKey
+        ) {
+          finalizeActiveCalibrationOpportunity("collapsed_issue");
+        }
+      }
 
       if (button) {
         if (state.expanded) {
@@ -976,6 +1238,7 @@
 
       if (state.explanationVisible) {
         state.everOpenedExplanation = true;
+        maybeRecordCalibrationOpen(issueIndex, issue);
 
         logIssueEvent({
           eventType: "show_explanation",
@@ -987,6 +1250,16 @@
           severity: issue.severity || "",
           visitCount: state.visitCount
         });
+
+        // Opening the explanation resolves this opportunity immediately
+        const issueKey = getIssueKey(issue);
+        if (
+          activeCalibrationOpportunity &&
+          activeCalibrationOpportunity.issueKey === issueKey &&
+          !activeCalibrationOpportunity.finalized
+        ) {
+          finalizeActiveCalibrationOpportunity("opened_explanation");
+        }
       } else {
         logIssueEvent({
           eventType: "hide_explanation",
@@ -1274,6 +1547,8 @@
 
     checkBtn.onclick = () => {
       if (isLoading) return;
+      hideAdaptivityToast();
+      finalizeActiveCalibrationOpportunity("ran_new_check");
 
       errorEl.textContent = "";
       statusEl.textContent = "Running accessibility check with structure + preview image...";
@@ -1310,7 +1585,19 @@
       }
 
       if (msg.type === "demand-mode") {
-        currentDemandMode = msg.payload.mode;
+        const incomingMode = msg.payload.mode;
+
+        // Ignore stale on_demand echoes after adaptive assignment in real mode
+        if (
+          isRealMode() &&
+          demandModeAssigned &&
+          currentDemandMode !== "on_demand" &&
+          incomingMode === "on_demand"
+        ) {
+          return;
+        }
+
+        currentDemandMode = incomingMode;
         syncModeInputs();
         applyDemandModeToInterface();
       }
@@ -1386,6 +1673,3 @@
     syncModeInputs();
     applyUiModeToInterface();
   </script>
-</body>
-
-</html>

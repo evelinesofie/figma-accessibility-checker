@@ -562,8 +562,23 @@ figma.ui.onmessage = async (msg) => {
 
 	if (msg.type === "set-demand-mode") {
 		const uiMode = await getUiMode();
+		const newMode = msg.mode;
+		const previousMode = await getDemandMode();
+		const userId = await getOrCreateUserId();
+		const reason =
+			typeof msg.reason === "string"
+				? msg.reason
+				: "manual_settings_toggle";
 
-		if (uiMode === "real") {
+		if (!isDemandMode(newMode)) {
+			return;
+		}
+
+		const isAutomaticAdaptiveChange =
+			reason === "threshold_rule_adaptation";
+
+		// In real mode, block manual mode switching but allow adaptive assignment
+		if (uiMode === "real" && !isAutomaticAdaptiveChange) {
 			const lockedMode = await getDemandMode();
 			figma.ui.postMessage({
 				type: "demand-mode",
@@ -572,19 +587,28 @@ figma.ui.onmessage = async (msg) => {
 			return;
 		}
 
-		const newMode = msg.mode;
-		const previousMode = await getDemandMode();
-		const userId = await getOrCreateUserId();
-
-		if (!isDemandMode(newMode)) {
-			return;
-		}
-
 		if (newMode === previousMode) {
+			figma.ui.postMessage({
+				type: "demand-mode",
+				payload: { mode: newMode },
+			});
 			return;
 		}
+
+		console.log(
+			"SET DEMAND MODE:",
+			JSON.stringify({
+				uiMode,
+				previousMode,
+				newMode,
+				reason,
+				isAutomaticAdaptiveChange,
+			}),
+		);
 
 		await setDemandMode(newMode);
+
+		console.log("DEMAND MODE SAVED:", newMode);
 
 		figma.ui.postMessage({
 			type: "demand-mode",
@@ -607,7 +631,7 @@ figma.ui.onmessage = async (msg) => {
 					eventType: "demand_mode_changed",
 					fromMode: previousMode,
 					toMode: newMode,
-					trigger: msg.reason || "manual_settings_toggle",
+					trigger: reason,
 					timestamp: new Date().toISOString(),
 					fileKey: getFileKey(),
 				}),
