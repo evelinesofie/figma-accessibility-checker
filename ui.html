@@ -58,7 +58,8 @@
 
     button:focus-visible,
     .icon-button:focus-visible,
-    .questionmark-btn:focus-visible {
+    .questionmark-btn:focus-visible,
+    .adaptivity-toast-ok:focus-visible {
       outline: 2px solid var(--accent-border);
       outline-offset: 2px;
     }
@@ -213,7 +214,7 @@
       align-items: flex-start;
       justify-content: space-between;
       gap: 10px;
-      padding: 10px 12px;
+      padding: 12px;
       border: 1px solid var(--accent-border);
       border-radius: 10px;
       background: var(--accent-soft);
@@ -230,36 +231,40 @@
       font-size: 12px;
       font-weight: 700;
       color: var(--accent-text);
-      margin-bottom: 2px;
+      margin-bottom: 4px;
     }
 
     .adaptivity-toast-message {
       font-size: 12px;
-      line-height: 1.4;
+      line-height: 1.45;
       color: #374151;
     }
 
-    .adaptivity-toast-close {
-      border: none;
-      background: transparent;
-      color: #666;
-      padding: 0;
-      width: 22px;
-      height: 22px;
-      border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
+    .adaptivity-toast-actions {
+      display: flex;
+      align-items: flex-end;
       flex-shrink: 0;
-      font-size: 16px;
-      line-height: 1;
+      padding-top: 26px;
     }
 
-    .adaptivity-toast-close:hover {
-      background: rgba(0, 0, 0, 0.05);
-      color: #222;
+    .adaptivity-toast-ok {
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      color: #fff;
+      font-weight: 600;
+      font-size: 12px;
+      line-height: 1;
+      padding: 4px 10px;
+      min-width: auto;
+      height: 26px;
+      border-radius: 8px;
     }
+
+    .adaptivity-toast-ok:hover {
+      filter: brightness(0.97);
+      background: var(--accent);
+    }
+
 
     .results-meta {
       margin-bottom: 12px;
@@ -599,14 +604,17 @@
     </div>
   </div>
 
-  <div id="adaptivityToast" class="adaptivity-toast hidden" role="status" aria-live="polite">
+  <div id="adaptivityToast" class="adaptivity-toast hidden" role="alert" aria-live="assertive">
     <div class="adaptivity-toast-content">
       <div class="adaptivity-toast-title">Adaptive mode updated</div>
       <div id="adaptivityToastMessage" class="adaptivity-toast-message"></div>
     </div>
-    <button id="adaptivityToastClose" class="adaptivity-toast-close" type="button" aria-label="Dismiss message">
-      ×
-    </button>
+
+    <div class="adaptivity-toast-actions">
+      <button id="adaptivityToastOk" class="adaptivity-toast-ok" type="button">
+        OK
+      </button>
+    </div>
   </div>
 
   <div class="row">
@@ -683,9 +691,7 @@
     const debugExtractedDataPanel = document.getElementById("debugExtractedDataPanel");
     const adaptivityToast = document.getElementById("adaptivityToast");
     const adaptivityToastMessage = document.getElementById("adaptivityToastMessage");
-    const adaptivityToastClose = document.getElementById("adaptivityToastClose");
-
-    let adaptivityToastTimer = null;
+    const adaptivityToastOk = document.getElementById("adaptivityToastOk");
 
     function createId(prefix) {
       return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
@@ -752,25 +758,24 @@
 
       adaptivityToastMessage.textContent = message;
       adaptivityToast.classList.remove("hidden");
-      adaptivityToast.offsetHeight;
 
-      if (adaptivityToastTimer) {
-        clearTimeout(adaptivityToastTimer);
-      }
-
-      adaptivityToastTimer = window.setTimeout(() => {
-        adaptivityToast.classList.add("hidden");
-        adaptivityToastTimer = null;
-      }, 10000);
+      logIssueEvent({
+        eventType: "adaptivity_toast_shown",
+        assignedMode: mode,
+        timestamp: new Date().toISOString(),
+      });
     }
 
-    function hideAdaptivityToast() {
-      if (!adaptivityToast) return;
-      if (adaptivityToastTimer) {
-        clearTimeout(adaptivityToastTimer);
-        adaptivityToastTimer = null;
-      }
+    function hideAdaptivityToast(reason = "ok_clicked") {
+      if (!adaptivityToast || adaptivityToast.classList.contains("hidden")) return;
+
       adaptivityToast.classList.add("hidden");
+
+      logIssueEvent({
+        eventType: "adaptivity_toast_dismissed",
+        dismissReason: reason,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     function postLogEvent(event) {
@@ -877,9 +882,9 @@
       return state.explanationVisible ? renderExplanationContent(issue) : "";
     }
 
-    adaptivityToastClose.onclick = (event) => {
+    adaptivityToastOk.onclick = (event) => {
       event.stopPropagation();
-      hideAdaptivityToast();
+      hideAdaptivityToast("ok_clicked");
     };
 
     function renderSelectionPreview() {
@@ -1107,7 +1112,6 @@
       const rate = calibrationOpens / 5;
       const newMode = rate < 0.5 ? "low_demand" : "always_visible";
 
-      // Apply locally first so the UI definitely changes immediately
       demandModeAssigned = true;
       currentDemandMode = newMode;
       showAdaptivityToast(newMode);
@@ -1115,7 +1119,6 @@
       syncModeInputs();
       applyDemandModeToInterface();
 
-      // Then persist to plugin code
       parent.postMessage(
         {
           pluginMessage: {
@@ -1251,7 +1254,6 @@
           visitCount: state.visitCount
         });
 
-        // Opening the explanation resolves this opportunity immediately
         const issueKey = getIssueKey(issue);
         if (
           activeCalibrationOpportunity &&
@@ -1547,7 +1549,6 @@
 
     checkBtn.onclick = () => {
       if (isLoading) return;
-      hideAdaptivityToast();
       finalizeActiveCalibrationOpportunity("ran_new_check");
 
       errorEl.textContent = "";
@@ -1587,7 +1588,6 @@
       if (msg.type === "demand-mode") {
         const incomingMode = msg.payload.mode;
 
-        // Ignore stale on_demand echoes after adaptive assignment in real mode
         if (
           isRealMode() &&
           demandModeAssigned &&
@@ -1673,3 +1673,6 @@
     syncModeInputs();
     applyUiModeToInterface();
   </script>
+</body>
+
+</html>
