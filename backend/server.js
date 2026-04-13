@@ -119,6 +119,27 @@ function getNodeFingerprintFromIndex(nodeIndex, nodeId) {
 	});
 }
 
+function getNodeVisualSignature(node) {
+	if (
+		node &&
+		typeof node.visualSignature === "string" &&
+		node.visualSignature.length > 0
+	) {
+		return node.visualSignature;
+	}
+
+	return stableHash({
+		name: node?.name,
+		type: node?.type,
+		visible: node?.visible,
+		width: node?.width,
+		height: node?.height,
+		text: node?.text,
+		fontSize: node?.fontSize,
+		fills: Array.isArray(node?.fills) ? node.fills : [],
+	});
+}
+
 function resolveIssueForUser(userId, fileKey, issue) {
 	const store = readDismissedIssues();
 	const existing = Array.isArray(store[userId]) ? store[userId] : [];
@@ -177,6 +198,20 @@ function getUserFileReviewCache(store, userId, fileKey) {
 	return store[userId][fileKey];
 }
 
+function buildVisualSignatureIndex(fileReviewCache) {
+	const index = new Map();
+
+	for (const entry of Object.values(fileReviewCache)) {
+		if (!entry || !entry.visualSignature) continue;
+		if (!index.has(entry.visualSignature)) {
+			index.set(entry.visualSignature, []);
+		}
+		index.get(entry.visualSignature).push(entry);
+	}
+
+	return index;
+}
+
 function makeCompactScreen(screen) {
 	const nodes = Array.isArray(screen?.nodes) ? screen.nodes : [];
 
@@ -193,6 +228,7 @@ function makeCompactScreen(screen) {
 		fontSize: typeof node.fontSize === "number" ? node.fontSize : undefined,
 		fills: node.fills,
 		fingerprint: node.fingerprint,
+		visualSignature: node.visualSignature,
 	}));
 
 	const textNodes = compactNodes.filter((n) => n.type === "TEXT").length;
@@ -250,10 +286,19 @@ Rules:
 - node_id must exactly match a node id from the provided data.
 - node_name must exactly match that node's name.
 - Do not report duplicate issue types for the same node.
-- Return at most 10 strong, grounded issues.
+- Return at most 8 strong, clearly evidenced issues.
 - Prefer fewer, better-supported issues over many weak ones.
 - If there are no clear issues, return an empty issues array.
 - Use cautious wording when evidence is incomplete.
+
+Consistency rules:
+- Be conservative.
+- Do not speculate.
+- Only report an issue when the evidence is clear from the provided data and/or image.
+- Favor precision over recall.
+- If an issue is borderline, omit it.
+- Similar visual structures should receive similar judgments.
+- Do not vary issue selection based on minor stylistic differences that do not materially affect accessibility.
 
 Use these issue types only:
 - "small_text"
@@ -394,6 +439,123 @@ ${JSON.stringify(node, null, 2)}
   `.trim();
 }
 
+async function adjudicateIssuesWithModel({
+	previousIssues,
+	currentIssues,
+	changedNodes,
+	client,
+	deviceType,
+}) {
+	const prompt = `
+You are deciding which accessibility issues should remain visible after an update.
+
+You are given:
+- previous visible issues
+- current candidate issues from a fresh AI review
+- which node ids changed
+
+Return ONLY valid JSON:
+
+{
+  "final_issues": [
+    {
+      "issue_type": "small_text" | "low_contrast" | "small_touch_target" | "unclear_label" | "weak_visual_hierarchy" | "other",
+      "title": string,
+      "node_name": string,
+      "node_id": string,
+      "severity": "low" | "medium" | "high",
+      "explanation": string,
+      "why_it_matters": string,
+      "suggestion": string
+    }
+  ]
+}
+
+Rules:
+1. KEEP previous issues unless clearly fixed.
+2. ADD a new issue only if:
+   - it is on a changed node, and
+   - it is plausibly caused or revealed by the change, and
+   - it is clearly evidenced.
+3. NEVER add new issues on unchanged nodes.
+4. If no nodes changed, output should be identical to previous issues.
+5. Prefer stability when uncertain.
+6. Do not invent issues not present in either previousIssues or currentIssues.
+
+Device context: ${deviceType}
+
+Changed node ids:
+${JSON.stringify(changedNodes, null, 2)}
+
+Previous issues:
+${JSON.stringify(previousIssues, null, 2)}
+
+Current candidate issues:
+${JSON.stringify(currentIssues, null, 2)}
+`;
+
+	const response = await client.responses.create({
+		model: "gpt-5.4-mini",
+		input: prompt,
+		text: {
+			format: {
+				type: "json_schema",
+				name: "accessibility_issue_adjudication",
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						final_issues: {
+							type: "array",
+							items: {
+								type: "object",
+								additionalProperties: false,
+								properties: {
+									issue_type: {
+										type: "string",
+										enum: [
+											"small_text",
+											"low_contrast",
+											"small_touch_target",
+											"unclear_label",
+											"weak_visual_hierarchy",
+											"other",
+										],
+									},
+									title: { type: "string" },
+									node_name: { type: "string" },
+									node_id: { type: "string" },
+									severity: {
+										type: "string",
+										enum: ["low", "medium", "high"],
+									},
+									explanation: { type: "string" },
+									why_it_matters: { type: "string" },
+									suggestion: { type: "string" },
+								},
+								required: [
+									"issue_type",
+									"title",
+									"node_name",
+									"node_id",
+									"severity",
+									"explanation",
+									"why_it_matters",
+									"suggestion",
+								],
+							},
+						},
+					},
+					required: ["final_issues"],
+				},
+			},
+		},
+	});
+
+	const parsed = JSON.parse(response.output_text || "{}");
+	return Array.isArray(parsed.final_issues) ? parsed.final_issues : [];
+}
+
 function normalizeIssue(issue, nodeIndex) {
 	if (!issue || typeof issue !== "object") return null;
 
@@ -499,6 +661,7 @@ function extractComparableNodeSnapshot(node) {
 		fontSize: node.fontSize,
 		fills: Array.isArray(node.fills) ? [...node.fills] : [],
 		fingerprint: node.fingerprint,
+		visualSignature: node.visualSignature,
 	};
 }
 
@@ -933,30 +1096,6 @@ async function recheckSingleIssueWithModel({
 	return normalized;
 }
 
-function buildSubScreenFromNodes(nodes) {
-	const compactNodes = nodes.map((node) => ({
-		id: node.id,
-		name: node.name,
-		type: node.type,
-		visible: node.visible,
-		width: node.width,
-		height: node.height,
-		x: node.x,
-		y: node.y,
-		text: node.text,
-		fontSize: node.fontSize,
-		fills: node.fills,
-		fingerprint: node.fingerprint,
-	}));
-
-	return {
-		selectionCount: compactNodes.length,
-		totalNodes: compactNodes.length,
-		textNodes: compactNodes.filter((n) => n.type === "TEXT").length,
-		nodes: compactNodes,
-	};
-}
-
 const app = express();
 const port = process.env.PORT || 3001;
 
@@ -980,34 +1119,15 @@ app.post("/analyze", async (req, res) => {
 		const nodeIndex = buildNodeIndex(compactScreen);
 
 		const userId = req.headers["x-user-id"] || "unknown";
-		const sessionId = req.headers["x-session-id"] || "unknown";
-		const condition = req.headers["x-condition"] || "unknown";
-		const demandMode = req.headers["x-demand-mode"] || "unknown";
-		const deviceType =
-			req.headers["x-device-type"] ||
-			req.body?.meta?.deviceType ||
-			"desktop";
 		const fileKey =
 			req.headers["x-file-key"] ||
 			req.body?.meta?.fileKey ||
 			"unknown-file";
 
-		appendEvent({
-			userId,
-			sessionId,
-			condition,
-			demandMode,
-			deviceType,
-			fileKey,
-			eventType: "run_check",
-			selectionCount: compactScreen.selectionCount,
-			totalNodes: compactScreen.totalNodes,
-			textNodes: compactScreen.textNodes,
-			hasSelectionImage:
-				typeof selectionImage?.imageBase64 === "string" &&
-				selectionImage.imageBase64.length > 0,
-			timestamp: new Date().toISOString(),
-		});
+		const deviceType =
+			req.headers["x-device-type"] ||
+			req.body?.meta?.deviceType ||
+			"desktop";
 
 		const reviewCacheStore = readReviewCache();
 		const fileReviewCache = getUserFileReviewCache(
@@ -1017,251 +1137,179 @@ app.post("/analyze", async (req, res) => {
 		);
 
 		const currentNodes = compactScreen.nodes || [];
-		const reusedIssues = [];
-		const newNodesToReview = [];
-		const changedNodesToReview = [];
-		const currentNodeIds = new Set();
+		const currentNodeIdSet = new Set(currentNodes.map((n) => n.id));
 
-		for (const node of currentNodes) {
-			currentNodeIds.add(node.id);
-
-			const currentFingerprint =
-				typeof node.fingerprint === "string" &&
-				node.fingerprint.length > 0
-					? node.fingerprint
-					: stableHash(node);
-
-			const cachedEntry = fileReviewCache[node.id];
-
-			if (!cachedEntry) {
-				newNodesToReview.push(node);
-				continue;
-			}
-
-			const cachedFingerprint = cachedEntry.fingerprint || null;
-			const cachedIssues = Array.isArray(cachedEntry.issues)
-				? cachedEntry.issues
-				: [];
-			const cachedDeviceType = cachedEntry.deviceType || "desktop";
-
-			const sameFingerprint = cachedFingerprint === currentFingerprint;
-			const sameDeviceType = cachedDeviceType === deviceType;
-
-			if (sameFingerprint && sameDeviceType) {
-				reusedIssues.push(...cachedIssues);
-				continue;
-			}
-
-			if (sameFingerprint && !sameDeviceType) {
-				newNodesToReview.push(node);
-				continue;
-			}
-
-			const currentNode = extractComparableNodeSnapshot(node);
-			const previousNode =
-				extractComparableNodeSnapshot(cachedEntry.nodeSnapshot) ||
-				extractComparableNodeSnapshot({
-					id: cachedEntry.nodeId,
-					name: cachedEntry.nodeName,
-					...cachedEntry.nodeSnapshot,
-				}) ||
-				currentNode;
-
-			changedNodesToReview.push({
-				currentNode,
-				previousNode,
-				previousIssues: cachedIssues,
-				previousFingerprint: cachedFingerprint,
-				changedFields: getChangedFields(previousNode, currentNode),
-			});
-		}
-
+		// Remove stale cache entries for nodes no longer in the current selection
 		for (const cachedNodeId of Object.keys(fileReviewCache)) {
-			if (!currentNodeIds.has(cachedNodeId)) {
+			if (!currentNodeIdSet.has(cachedNodeId)) {
 				delete fileReviewCache[cachedNodeId];
 			}
 		}
 
-		let newNodeIssues = [];
-		let changedNodeIssues = [];
-		let overallAssessment = "";
-		let changedNodeSummaries = [];
+		// -------------------------
+		// STEP 1: detect changed nodes
+		// -------------------------
+		const changedNodeIds = [];
 
-		if (newNodesToReview.length > 0) {
-			const subScreen = buildSubScreenFromNodes(newNodesToReview);
-			const subNodeIndex = buildNodeIndex(subScreen);
+		for (const node of currentNodes) {
+			const cached = fileReviewCache[node.id];
+			const fingerprint = node.fingerprint || stableHash(node);
 
-			const analysis = await analyzeScreenWithModel(
-				subScreen,
-				subNodeIndex,
-				client,
-				selectionImage,
-				deviceType,
-			);
-
-			newNodeIssues = analysis.issues;
-			overallAssessment = analysis.overall_assessment || "";
-
-			const issuesByNodeId = new Map();
-			for (const issue of newNodeIssues) {
-				if (!issuesByNodeId.has(issue.node_id)) {
-					issuesByNodeId.set(issue.node_id, []);
-				}
-				issuesByNodeId.get(issue.node_id).push(issue);
+			if (!cached) {
+				changedNodeIds.push(node.id);
+				continue;
 			}
 
-			for (const node of newNodesToReview) {
-				const currentFingerprint =
-					typeof node.fingerprint === "string" &&
-					node.fingerprint.length > 0
-						? node.fingerprint
-						: stableHash(node);
+			if ((cached.deviceType || "desktop") !== deviceType) {
+				changedNodeIds.push(node.id);
+				continue;
+			}
 
-				fileReviewCache[node.id] = {
-					nodeId: node.id,
-					nodeName: node.name,
-					fingerprint: currentFingerprint,
-					deviceType,
-					nodeSnapshot: extractComparableNodeSnapshot(node),
-					issues: issuesByNodeId.get(node.id) || [],
-					reviewedAt: new Date().toISOString(),
-				};
+			if (cached.fingerprint !== fingerprint) {
+				changedNodeIds.push(node.id);
 			}
 		}
 
-		if (changedNodesToReview.length > 0) {
-			const updatedBatch = await updateChangedNodesWithModel({
-				changedNodes: changedNodesToReview,
-				client,
-				deviceType,
-			});
+		// -------------------------
+		// STEP 2: if nothing changed, reuse cached AI output
+		// -------------------------
+		if (changedNodeIds.length === 0) {
+			const cachedIssues = Object.values(fileReviewCache).flatMap(
+				(entry) => entry.issues || [],
+			);
 
-			if (!overallAssessment) {
-				overallAssessment = updatedBatch.overall_assessment || "";
-			}
+			const resolvedKeys = getResolvedIssueKeySetForUserAndFile(
+				userId,
+				fileKey,
+			);
 
-			for (const updatedNode of updatedBatch.updatedNodes) {
-				changedNodeIssues.push(...updatedNode.issues);
-
-				const originalItem = changedNodesToReview.find(
-					(item) => item.currentNode.id === updatedNode.nodeId,
-				);
-
-				changedNodeSummaries.push({
-					nodeId: updatedNode.nodeId,
-					nodeName: updatedNode.nodeName,
-					changedFields: updatedNode.changedFields,
-					previousIssueCount:
-						originalItem?.previousIssues?.length || 0,
-					updatedIssueCount: updatedNode.issues.length,
+			const visibleIssues = dedupeIssues(cachedIssues)
+				.map((issue) => ({
+					...issue,
+					node_fingerprint: getNodeFingerprintFromIndex(
+						nodeIndex,
+						issue.node_id,
+					),
+				}))
+				.filter((issue) => {
+					const key = getResolvedIssueKey(fileKey, issue);
+					return !resolvedKeys.has(key);
 				});
 
-				const currentNode = originalItem?.currentNode;
-				if (!currentNode) continue;
+			return res.json({
+				summary: {
+					total_nodes: compactScreen.totalNodes,
+					text_nodes: compactScreen.textNodes,
+				},
+				overall_assessment:
+					"No element changes detected since the last check. Reusing previous AI review.",
+				issues: visibleIssues,
+			});
+		}
 
-				const currentFingerprint =
-					typeof currentNode.fingerprint === "string" &&
-					currentNode.fingerprint.length > 0
-						? currentNode.fingerprint
-						: stableHash(currentNode);
+		// -------------------------
+		// STEP 3: full AI scan only when something changed
+		// -------------------------
+		const analysis = await analyzeScreenWithModel(
+			compactScreen,
+			nodeIndex,
+			client,
+			selectionImage,
+			deviceType,
+		);
 
-				fileReviewCache[currentNode.id] = {
-					nodeId: currentNode.id,
-					nodeName: currentNode.name,
-					fingerprint: currentFingerprint,
-					deviceType,
-					nodeSnapshot: extractComparableNodeSnapshot(currentNode),
-					issues: updatedNode.issues,
-					reviewedAt: new Date().toISOString(),
-				};
+		const candidateIssues = analysis.issues || [];
+
+		// -------------------------
+		// STEP 4: previous issues
+		// -------------------------
+		const previousIssues = Object.values(fileReviewCache).flatMap(
+			(entry) => entry.issues || [],
+		);
+
+		// -------------------------
+		// STEP 5: AI adjudication only when something changed
+		// -------------------------
+		const adjudicatedRawIssues = await adjudicateIssuesWithModel({
+			previousIssues,
+			currentIssues: candidateIssues,
+			changedNodes: changedNodeIds,
+			client,
+			deviceType,
+		});
+
+		const finalIssues = adjudicatedRawIssues
+			.map((issue) => normalizeIssue(issue, nodeIndex))
+			.filter(Boolean);
+
+		const dedupedFinalIssues = dedupeIssues(finalIssues);
+
+		// -------------------------
+		// STEP 6: update cache
+		// -------------------------
+		const issuesByNode = new Map();
+
+		for (const issue of dedupedFinalIssues) {
+			if (!issuesByNode.has(issue.node_id)) {
+				issuesByNode.set(issue.node_id, []);
 			}
+			issuesByNode.get(issue.node_id).push(issue);
+		}
+
+		for (const node of currentNodes) {
+			const fingerprint = node.fingerprint || stableHash(node);
+
+			fileReviewCache[node.id] = {
+				nodeId: node.id,
+				nodeName: node.name,
+				fingerprint,
+				visualSignature: getNodeVisualSignature(node),
+				deviceType,
+				nodeSnapshot: extractComparableNodeSnapshot(node),
+				issues: issuesByNode.get(node.id) || [],
+				reviewedAt: new Date().toISOString(),
+			};
 		}
 
 		writeReviewCache(reviewCacheStore);
 
-		const mergedIssues = dedupeIssues([
-			...reusedIssues,
-			...newNodeIssues,
-			...changedNodeIssues,
-		]).map((issue) => ({
-			...issue,
-			node_fingerprint: getNodeFingerprintFromIndex(
-				nodeIndex,
-				issue.node_id,
-			),
-		}));
-
-		const resolvedIssueKeys = getResolvedIssueKeySetForUserAndFile(
+		// -------------------------
+		// STEP 7: filter dismissed
+		// -------------------------
+		const resolvedKeys = getResolvedIssueKeySetForUserAndFile(
 			userId,
 			fileKey,
 		);
 
-		const visibleIssues = mergedIssues.filter((issue) => {
-			const resolvedKey = getResolvedIssueKey(fileKey, issue);
-			return !resolvedIssueKeys.has(resolvedKey);
-		});
+		const visibleIssues = dedupedFinalIssues
+			.map((issue) => ({
+				...issue,
+				node_fingerprint: getNodeFingerprintFromIndex(
+					nodeIndex,
+					issue.node_id,
+				),
+			}))
+			.filter((issue) => {
+				const key = getResolvedIssueKey(fileKey, issue);
+				return !resolvedKeys.has(key);
+			});
 
-		const parsed = {
+		res.json({
 			summary: {
 				total_nodes: compactScreen.totalNodes,
 				text_nodes: compactScreen.textNodes,
 			},
 			overall_assessment:
-				overallAssessment ||
-				(newNodesToReview.length === 0 &&
-				changedNodesToReview.length === 0
-					? "No element changes detected since the last check. Reusing existing issue results for the current selection."
-					: changedNodesToReview.length > 0 &&
-						  newNodesToReview.length === 0
-						? "Updated issues for changed elements in one batch and reused results for unchanged elements."
-						: visibleIssues.length === 0
-							? "Issues reviewed for new or changed elements. No visible issues to show after filtering."
-							: "Issues updated for new or changed elements and reused for unchanged elements."),
+				analysis.overall_assessment ||
+				"AI review updated for changed elements.",
 			issues: visibleIssues,
-		};
-
-		appendEvent({
-			userId,
-			sessionId,
-			condition,
-			demandMode,
-			deviceType,
-			fileKey,
-			eventType: "check_completed",
-			issueCount: Array.isArray(parsed.issues) ? parsed.issues.length : 0,
-			reusedIssueCount: reusedIssues.length,
-			newlyReviewedIssueCount: newNodeIssues.length,
-			updatedChangedNodeIssueCount: changedNodeIssues.length,
-			newNodeCount: newNodesToReview.length,
-			changedNodeCount: changedNodesToReview.length,
-			unchangedNodeCount:
-				currentNodes.length -
-				newNodesToReview.length -
-				changedNodesToReview.length,
-			changedNodeSummaries,
-			hasSelectionImage:
-				typeof selectionImage?.imageBase64 === "string" &&
-				selectionImage.imageBase64.length > 0,
-			overallAssessment: parsed.overall_assessment || "",
-			timestamp: new Date().toISOString(),
 		});
-
-		res.json(parsed);
 	} catch (error) {
 		console.error("Analyze error:", error);
 
-		let message = "Unknown server error";
-		if (error instanceof Error) {
-			message = error.message;
-		}
-
-		if (error && typeof error === "object" && "status" in error) {
-			message = `OpenAI/API error ${error.status}: ${message}`;
-		}
-
 		res.status(500).json({
 			error: true,
-			message,
+			message: error instanceof Error ? error.message : "Unknown error",
 		});
 	}
 });
@@ -1412,6 +1460,7 @@ app.post("/recheck-issue", async (req, res) => {
 			nodeId: node.id,
 			nodeName: node.name,
 			fingerprint: currentFingerprint,
+			visualSignature: getNodeVisualSignature(node),
 			deviceType,
 			nodeSnapshot: extractComparableNodeSnapshot(node),
 			issues: [],
@@ -1435,6 +1484,7 @@ app.post("/recheck-issue", async (req, res) => {
 			nodeId: node.id,
 			nodeName: node.name,
 			fingerprint: currentFingerprint,
+			visualSignature: getNodeVisualSignature(node),
 			deviceType,
 			nodeSnapshot: extractComparableNodeSnapshot(node),
 			issues: nextIssues,

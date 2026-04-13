@@ -13,6 +13,7 @@ type ExtractedNode = {
 	fontSize?: number;
 	fills?: string[];
 	fingerprint: string;
+	visualSignature: string;
 };
 
 type ScreenSummary = {
@@ -157,12 +158,12 @@ function simpleHash(input: string): string {
 	return String(hash);
 }
 
-function createNodeFingerprint(node: SceneNode): string {
+function createStrictNodeFingerprint(node: SceneNode): string {
 	const text = getNodeText(node);
 	const fontSize = getNodeFontSize(node);
 	const fills = extractFills(node);
 
-	const fingerprintPayload = {
+	const payload = {
 		id: node.id,
 		name: node.name,
 		type: node.type,
@@ -176,7 +177,26 @@ function createNodeFingerprint(node: SceneNode): string {
 		fills,
 	};
 
-	return simpleHash(JSON.stringify(fingerprintPayload));
+	return simpleHash(JSON.stringify(payload));
+}
+
+function createVisualNodeSignature(node: SceneNode): string {
+	const text = getNodeText(node);
+	const fontSize = getNodeFontSize(node);
+	const fills = extractFills(node);
+
+	const payload = {
+		name: node.name,
+		type: node.type,
+		visible: node.visible,
+		width: "width" in node ? Math.round(node.width) : undefined,
+		height: "height" in node ? Math.round(node.height) : undefined,
+		text,
+		fontSize: typeof fontSize === "number" ? fontSize : String(fontSize),
+		fills,
+	};
+
+	return simpleHash(JSON.stringify(payload));
 }
 
 function extractNode(node: SceneNode): ExtractedNode {
@@ -185,7 +205,8 @@ function extractNode(node: SceneNode): ExtractedNode {
 		name: node.name,
 		type: node.type,
 		visible: node.visible,
-		fingerprint: createNodeFingerprint(node),
+		fingerprint: createStrictNodeFingerprint(node),
+		visualSignature: createVisualNodeSignature(node),
 	};
 
 	if ("width" in node) base.width = Math.round(node.width);
