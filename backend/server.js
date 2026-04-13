@@ -76,15 +76,11 @@ function stableHash(value) {
 }
 
 function createIssueKey(issue) {
-	return `${issue.issue_type || "other"}|${issue.node_id || "unknown-node"}`;
+	return `${issue?.issue_type || "other"}|${issue?.node_id || "unknown-node"}`;
 }
 
-function getDismissedKey(userId, fileKey, issue) {
-	return `${userId}|${fileKey}|${createIssueKey(issue)}`;
-}
-
-function getDismissedNodeStateKey(fileKey, nodeId, nodeFingerprint) {
-	return `${fileKey}|${nodeId}|${nodeFingerprint || "no-fingerprint"}`;
+function getResolvedIssueKey(fileKey, issue) {
+	return `${fileKey}|${createIssueKey(issue)}`;
 }
 
 function buildNodeIndex(compactScreen) {
@@ -123,34 +119,34 @@ function getNodeFingerprintFromIndex(nodeIndex, nodeId) {
 	});
 }
 
-function dismissIssueForUser(userId, fileKey, issue, nodeFingerprint) {
+function resolveIssueForUser(userId, fileKey, issue) {
 	const store = readDismissedIssues();
 	const existing = Array.isArray(store[userId]) ? store[userId] : [];
-	const dismissKey = getDismissedKey(userId, fileKey, issue);
-	const nodeStateKey = getDismissedNodeStateKey(
-		fileKey,
-		issue.node_id,
-		nodeFingerprint,
+	const resolvedKey = getResolvedIssueKey(fileKey, issue);
+
+	const filtered = existing.filter(
+		(item) => item.resolvedKey !== resolvedKey,
 	);
 
-	const updatedEntries = existing.filter((item) => {
-		if (item.fileKey !== fileKey) return true;
-		if (item.nodeId !== issue.node_id) return true;
-		return item.nodeFingerprint !== nodeFingerprint;
-	});
-
-	updatedEntries.push({
-		dismissKey,
+	filtered.push({
+		resolvedKey,
 		fileKey,
 		issueType: issue.issue_type,
 		nodeId: issue.node_id,
-		nodeName: issue.node_name,
-		nodeFingerprint: nodeFingerprint || null,
-		nodeStateKey,
-		dismissedAt: new Date().toISOString(),
+		nodeName: issue.node_name || "",
+		resolvedAt: new Date().toISOString(),
 	});
 
-	store[userId] = updatedEntries;
+	store[userId] = filtered;
+	writeDismissedIssues(store);
+}
+
+function unresolveIssueForUser(userId, fileKey, issue) {
+	const store = readDismissedIssues();
+	const existing = Array.isArray(store[userId]) ? store[userId] : [];
+	const resolvedKey = getResolvedIssueKey(fileKey, issue);
+
+	store[userId] = existing.filter((item) => item.resolvedKey !== resolvedKey);
 	writeDismissedIssues(store);
 }
 
@@ -161,48 +157,18 @@ function resetDismissedIssuesForUser(userId, fileKey) {
 	writeDismissedIssues(store);
 }
 
-function getActiveDismissedMapForUserAndFile(userId, fileKey, nodeIndex) {
+function getResolvedIssueKeySetForUserAndFile(userId, fileKey) {
 	const store = readDismissedIssues();
 	const entries = Array.isArray(store[userId]) ? store[userId] : [];
-	const activeByNodeState = new Set();
-	const staleDismissKeys = [];
+	const resolvedKeys = new Set();
 
 	for (const item of entries) {
 		if (item.fileKey !== fileKey) continue;
-
-		const currentFingerprint = getNodeFingerprintFromIndex(
-			nodeIndex,
-			item.nodeId,
-		);
-
-		if (!currentFingerprint) {
-			continue;
-		}
-
-		if (
-			!item.nodeFingerprint ||
-			item.nodeFingerprint === currentFingerprint
-		) {
-			const nodeStateKey = getDismissedNodeStateKey(
-				fileKey,
-				item.nodeId,
-				currentFingerprint,
-			);
-			activeByNodeState.add(nodeStateKey);
-		} else {
-			staleDismissKeys.push(item.dismissKey);
-		}
+		if (!item.issueType || !item.nodeId) continue;
+		resolvedKeys.add(`${fileKey}|${item.issueType}|${item.nodeId}`);
 	}
 
-	if (staleDismissKeys.length > 0) {
-		const filtered = entries.filter(
-			(item) => !staleDismissKeys.includes(item.dismissKey),
-		);
-		store[userId] = filtered;
-		writeDismissedIssues(store);
-	}
-
-	return activeByNodeState;
+	return resolvedKeys;
 }
 
 function getUserFileReviewCache(store, userId, fileKey) {
@@ -379,6 +345,52 @@ Device context:
 
 Changed nodes:
 ${JSON.stringify(changedNodes, null, 2)}
+  `.trim();
+}
+
+function buildSingleIssueRecheckPrompt(
+	node,
+	issueType,
+	hasSelectionImage,
+	deviceType,
+) {
+	return `
+You are rechecking one specific accessibility issue on one specific Figma node.
+
+Return ONLY valid JSON with this exact structure:
+
+{
+  "issue": {
+    "issue_type": "small_text" | "low_contrast" | "small_touch_target" | "unclear_label" | "weak_visual_hierarchy" | "other",
+    "title": string,
+    "node_name": string,
+    "node_id": string,
+    "severity": "low" | "medium" | "high",
+    "explanation": string,
+    "why_it_matters": string,
+    "suggestion": string
+  } | null
+}
+
+Rules:
+- Re-evaluate ONLY this requested issue type: "${issueType}".
+- Do not return any other issue type.
+- Return issue: null if this specific issue is not currently justified.
+- node_id must exactly match the provided node id.
+- node_name must exactly match the provided node name.
+- Review a design mockup, not live code.
+- Only report issues that can be fixed in Figma.
+- Do not report code-only issues like alt text, ARIA, semantic HTML, keyboard handlers, or screen reader roles.
+
+Device context:
+- This prototype should be reviewed as a ${deviceType} interface.
+- Only use touch-oriented reasoning when appropriate for the selected device type.
+
+Image note:
+- ${hasSelectionImage ? "A rendered preview image is included." : "No preview image is included."}
+
+Node data:
+${JSON.stringify(node, null, 2)}
   `.trim();
 }
 
@@ -655,6 +667,62 @@ function buildBatchUpdateResponseSchema() {
 	};
 }
 
+function buildSingleIssueRecheckResponseSchema() {
+	return {
+		type: "json_schema",
+		name: "accessibility_single_issue_recheck",
+		schema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				issue: {
+					anyOf: [
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								issue_type: {
+									type: "string",
+									enum: [
+										"small_text",
+										"low_contrast",
+										"small_touch_target",
+										"unclear_label",
+										"weak_visual_hierarchy",
+										"other",
+									],
+								},
+								title: { type: "string" },
+								node_name: { type: "string" },
+								node_id: { type: "string" },
+								severity: {
+									type: "string",
+									enum: ["low", "medium", "high"],
+								},
+								explanation: { type: "string" },
+								why_it_matters: { type: "string" },
+								suggestion: { type: "string" },
+							},
+							required: [
+								"issue_type",
+								"title",
+								"node_name",
+								"node_id",
+								"severity",
+								"explanation",
+								"why_it_matters",
+								"suggestion",
+							],
+						},
+						{ type: "null" },
+					],
+				},
+			},
+			required: ["issue"],
+		},
+	};
+}
+
 async function analyzeScreenWithModel(
 	compactScreen,
 	nodeIndex,
@@ -796,6 +864,75 @@ async function updateChangedNodesWithModel({
 	};
 }
 
+async function recheckSingleIssueWithModel({
+	node,
+	issueType,
+	client,
+	selectionImage,
+	deviceType,
+}) {
+	const singleNodeScreen = {
+		selectionCount: 1,
+		totalNodes: 1,
+		textNodes: node.type === "TEXT" ? 1 : 0,
+		nodes: [node],
+	};
+	const nodeIndex = buildNodeIndex(singleNodeScreen);
+
+	const hasSelectionImage =
+		typeof selectionImage?.imageBase64 === "string" &&
+		selectionImage.imageBase64.length > 0;
+
+	const prompt = buildSingleIssueRecheckPrompt(
+		node,
+		issueType,
+		hasSelectionImage,
+		deviceType,
+	);
+
+	const content = [
+		{
+			type: "input_text",
+			text: prompt,
+		},
+	];
+
+	if (hasSelectionImage) {
+		content.push({
+			type: "input_image",
+			image_url: `data:${selectionImage.mimeType || "image/png"};base64,${selectionImage.imageBase64}`,
+		});
+	}
+
+	const response = await client.responses.create({
+		model: "gpt-5.4-mini",
+		input: [
+			{
+				role: "user",
+				content,
+			},
+		],
+		text: {
+			format: buildSingleIssueRecheckResponseSchema(),
+		},
+	});
+
+	const parsed = JSON.parse(response.output_text);
+	const normalized = parsed.issue
+		? normalizeIssue(parsed.issue, nodeIndex)
+		: null;
+
+	if (!normalized) {
+		return null;
+	}
+
+	if (normalized.issue_type !== issueType) {
+		return null;
+	}
+
+	return normalized;
+}
+
 function buildSubScreenFromNodes(nodes) {
 	const compactNodes = nodes.map((node) => ({
 		id: node.id,
@@ -896,7 +1033,6 @@ app.post("/analyze", async (req, res) => {
 
 			const cachedEntry = fileReviewCache[node.id];
 
-			// Never reviewed before
 			if (!cachedEntry) {
 				newNodesToReview.push(node);
 				continue;
@@ -911,20 +1047,16 @@ app.post("/analyze", async (req, res) => {
 			const sameFingerprint = cachedFingerprint === currentFingerprint;
 			const sameDeviceType = cachedDeviceType === deviceType;
 
-			// Same node state + same device context => safe to reuse
-			if (sameFingerprint && sameDeviceType && cachedIssues.length >= 0) {
+			if (sameFingerprint && sameDeviceType) {
 				reusedIssues.push(...cachedIssues);
 				continue;
 			}
 
-			// Same node state + different device context => force fresh review
-			// This is the critical fix for stale "tap"/touch phrasing.
 			if (sameFingerprint && !sameDeviceType) {
 				newNodesToReview.push(node);
 				continue;
 			}
 
-			// Real node change => use stable changed-node update flow
 			const currentNode = extractComparableNodeSnapshot(node);
 			const previousNode =
 				extractComparableNodeSnapshot(cachedEntry.nodeSnapshot) ||
@@ -944,7 +1076,6 @@ app.post("/analyze", async (req, res) => {
 			});
 		}
 
-		// Remove cache entries for nodes no longer in the current selection
 		for (const cachedNodeId of Object.keys(fileReviewCache)) {
 			if (!currentNodeIds.has(cachedNodeId)) {
 				delete fileReviewCache[cachedNodeId];
@@ -1060,25 +1191,14 @@ app.post("/analyze", async (req, res) => {
 			),
 		}));
 
-		const activeDismissedNodeStates = getActiveDismissedMapForUserAndFile(
+		const resolvedIssueKeys = getResolvedIssueKeySetForUserAndFile(
 			userId,
 			fileKey,
-			nodeIndex,
 		);
 
 		const visibleIssues = mergedIssues.filter((issue) => {
-			const currentFingerprint = getNodeFingerprintFromIndex(
-				nodeIndex,
-				issue.node_id,
-			);
-
-			const nodeStateKey = getDismissedNodeStateKey(
-				fileKey,
-				issue.node_id,
-				currentFingerprint,
-			);
-
-			return !activeDismissedNodeStates.has(nodeStateKey);
+			const resolvedKey = getResolvedIssueKey(fileKey, issue);
+			return !resolvedIssueKeys.has(resolvedKey);
 		});
 
 		const parsed = {
@@ -1181,7 +1301,7 @@ app.post("/log", (req, res) => {
 	}
 });
 
-app.post("/dismiss-issue", (req, res) => {
+app.post("/resolve-issue", (req, res) => {
 	try {
 		const userId = req.headers["x-user-id"] || req.body.userId || "unknown";
 		const sessionId = req.headers["x-session-id"] || "unknown";
@@ -1193,10 +1313,6 @@ app.post("/dismiss-issue", (req, res) => {
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
 		const issue = req.body.issue;
-		const nodeFingerprint =
-			typeof req.body.nodeFingerprint === "string"
-				? req.body.nodeFingerprint
-				: null;
 
 		if (!issue || !issue.issue_type || !issue.node_id) {
 			return res.status(400).json({
@@ -1205,7 +1321,7 @@ app.post("/dismiss-issue", (req, res) => {
 			});
 		}
 
-		dismissIssueForUser(userId, fileKey, issue, nodeFingerprint);
+		resolveIssueForUser(userId, fileKey, issue);
 
 		appendEvent({
 			userId,
@@ -1214,23 +1330,159 @@ app.post("/dismiss-issue", (req, res) => {
 			demandMode,
 			deviceType,
 			fileKey,
-			eventType: "issue_dismissed",
+			eventType: "issue_resolved",
 			issueType: issue.issue_type,
 			nodeId: issue.node_id,
 			nodeName: issue.node_name || "",
-			nodeFingerprint,
 			timestamp: new Date().toISOString(),
 		});
 
 		res.json({ ok: true });
 	} catch (error) {
-		console.error("Dismiss issue error:", error);
+		console.error("Resolve issue error:", error);
 		res.status(500).json({
 			error: true,
 			message:
 				error instanceof Error
 					? error.message
-					: "Unknown dismiss error",
+					: "Unknown resolve error",
+		});
+	}
+});
+
+app.post("/recheck-issue", async (req, res) => {
+	try {
+		const userId = req.headers["x-user-id"] || req.body.userId || "unknown";
+		const sessionId = req.headers["x-session-id"] || "unknown";
+		const condition = req.headers["x-condition"] || "unknown";
+		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const deviceType =
+			req.headers["x-device-type"] ||
+			req.body?.meta?.deviceType ||
+			"desktop";
+		const fileKey =
+			req.headers["x-file-key"] ||
+			req.body?.meta?.fileKey ||
+			"unknown-file";
+
+		const issue = req.body.issue;
+		const compactScreen = makeCompactScreen(req.body.screen);
+		const selectionImage = req.body.selectionImage || null;
+		const nodeIndex = buildNodeIndex(compactScreen);
+
+		if (!issue || !issue.issue_type || !issue.node_id) {
+			return res.status(400).json({
+				error: true,
+				message: "Missing required issue identity fields",
+			});
+		}
+
+		const node = nodeIndex.get(issue.node_id);
+		if (!node) {
+			return res.status(404).json({
+				error: true,
+				message:
+					"Could not find the target node in the current selection data",
+			});
+		}
+
+		unresolveIssueForUser(userId, fileKey, issue);
+
+		const refreshedIssue = await recheckSingleIssueWithModel({
+			node,
+			issueType: issue.issue_type,
+			client,
+			selectionImage,
+			deviceType,
+		});
+
+		const reviewCacheStore = readReviewCache();
+		const fileReviewCache = getUserFileReviewCache(
+			reviewCacheStore,
+			userId,
+			fileKey,
+		);
+
+		const currentFingerprint =
+			typeof node.fingerprint === "string" && node.fingerprint.length > 0
+				? node.fingerprint
+				: stableHash(node);
+
+		const existingEntry = fileReviewCache[node.id] || {
+			nodeId: node.id,
+			nodeName: node.name,
+			fingerprint: currentFingerprint,
+			deviceType,
+			nodeSnapshot: extractComparableNodeSnapshot(node),
+			issues: [],
+			reviewedAt: new Date().toISOString(),
+		};
+
+		const existingIssues = Array.isArray(existingEntry.issues)
+			? existingEntry.issues
+			: [];
+
+		const keptIssues = existingIssues.filter(
+			(item) => item.issue_type !== issue.issue_type,
+		);
+
+		const nextIssues = refreshedIssue
+			? dedupeIssues([...keptIssues, refreshedIssue])
+			: dedupeIssues(keptIssues);
+
+		fileReviewCache[node.id] = {
+			...existingEntry,
+			nodeId: node.id,
+			nodeName: node.name,
+			fingerprint: currentFingerprint,
+			deviceType,
+			nodeSnapshot: extractComparableNodeSnapshot(node),
+			issues: nextIssues,
+			reviewedAt: new Date().toISOString(),
+		};
+
+		writeReviewCache(reviewCacheStore);
+
+		appendEvent({
+			userId,
+			sessionId,
+			condition,
+			demandMode,
+			deviceType,
+			fileKey,
+			eventType: "issue_rechecked",
+			issueType: issue.issue_type,
+			nodeId: issue.node_id,
+			nodeName: issue.node_name || node.name || "",
+			stillPresent: !!refreshedIssue,
+			timestamp: new Date().toISOString(),
+		});
+
+		res.json({
+			issueType: issue.issue_type,
+			nodeId: issue.node_id,
+			issue: refreshedIssue
+				? {
+						...refreshedIssue,
+						node_fingerprint: currentFingerprint,
+					}
+				: null,
+		});
+	} catch (error) {
+		console.error("Recheck issue error:", error);
+
+		let message = "Unknown recheck error";
+		if (error instanceof Error) {
+			message = error.message;
+		}
+
+		if (error && typeof error === "object" && "status" in error) {
+			message = `OpenAI/API error ${error.status}: ${message}`;
+		}
+
+		res.status(500).json({
+			error: true,
+			message,
 		});
 	}
 });

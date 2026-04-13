@@ -339,14 +339,6 @@
       background: #fdfdfdfe;
     }
 
-    .issue-header .icon-button {
-      cursor: default;
-    }
-
-    .issue-header .icon-button:hover {
-      cursor: pointer;
-    }
-
     .issue-expand-btn {
       margin-top: 0;
       font-size: 14px;
@@ -802,7 +794,8 @@
           explanationVisible: false,
           visitCount: 0,
           everOpenedExplanation: false,
-          nudgeLogged: false
+          nudgeLogged: false,
+          isRechecking: false
         };
       }
       return issueUiState[key];
@@ -1050,6 +1043,17 @@
                   aria-label="Go to element"
                   data-tooltip="Go to element">
                   <span aria-hidden="true">↗</span>
+                </button>
+
+                <button
+                  class="icon-button"
+                  type="button"
+                  data-action="recheck-issue"
+                  data-issue-index="${index}"
+                  aria-label="Recheck this issue"
+                  data-tooltip="Recheck this issue"
+                  ${state.isRechecking ? "disabled" : ""}>
+                  <span aria-hidden="true">${state.isRechecking ? "…" : "↻"}</span>
                 </button>
 
                 <button
@@ -1388,13 +1392,14 @@
         statusEl.textContent = "Please wait a moment and try again.";
         return;
       }
+
       const issue = latestResults?.issues?.[issueIndex];
       if (!issue) return;
 
       parent.postMessage(
         {
           pluginMessage: {
-            type: "dismiss-issue",
+            type: "resolve-issue",
             sessionId,
             userId,
             condition,
@@ -1402,8 +1407,7 @@
               issue_type: issue.issue_type,
               node_id: issue.node_id,
               node_name: issue.node_name,
-            },
-            nodeFingerprint: issue.node_fingerprint || null,
+            }
           },
         },
         "*"
@@ -1418,6 +1422,79 @@
         nodeId: issue.node_id || "",
         severity: issue.severity || ""
       });
+    }
+
+    function handleRecheckIssue(issueIndex) {
+      if (!uiReady || userId === "loading-user") {
+        statusEl.textContent = "Please wait a moment and try again.";
+        return;
+      }
+
+      const issue = latestResults?.issues?.[issueIndex];
+      if (!issue) return;
+
+      const state = ensureIssueState(issue);
+      if (state.isRechecking) return;
+
+      state.isRechecking = true;
+      renderResults(latestResults);
+
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "recheck-issue",
+            sessionId,
+            userId,
+            condition,
+            issue: {
+              issue_type: issue.issue_type,
+              node_id: issue.node_id,
+              node_name: issue.node_name,
+            }
+          },
+        },
+        "*"
+      );
+
+      logIssueEvent({
+        eventType: "issue_recheck_clicked",
+        issueIndex,
+        issueTitle: issue.title || "",
+        issueNode: issue.node_name || "",
+        issueType: issue.issue_type || "",
+        nodeId: issue.node_id || "",
+        severity: issue.severity || ""
+      });
+    }
+
+    function upsertIssueInLatestResults(updatedIssue) {
+      if (!latestResults || !Array.isArray(latestResults.issues)) return;
+
+      const key = `${updatedIssue.issue_type}|${updatedIssue.node_id}`;
+      const existingIndex = latestResults.issues.findIndex((issue) => {
+        return `${issue.issue_type}|${issue.node_id}` === key;
+      });
+
+      if (existingIndex >= 0) {
+        latestResults.issues[existingIndex] = updatedIssue;
+      } else {
+        latestResults.issues.unshift(updatedIssue);
+      }
+    }
+
+    function removeIssueFromLatestResults(issueType, nodeId) {
+      if (!latestResults || !Array.isArray(latestResults.issues)) return;
+
+      latestResults.issues = latestResults.issues.filter((issue) => {
+        return !(issue.issue_type === issueType && issue.node_id === nodeId);
+      });
+    }
+
+    function clearRecheckingState(issueType, nodeId) {
+      const key = `${issueType || "other"}|${nodeId || "unknown-node"}`;
+      if (issueUiState[key]) {
+        issueUiState[key].isRechecking = false;
+      }
     }
 
     function attachResultsHandlers() {
@@ -1446,6 +1523,11 @@
 
           if (action === "resolve-issue") {
             handleResolveIssue(issueIndex);
+            return;
+          }
+
+          if (action === "recheck-issue") {
+            handleRecheckIssue(issueIndex);
           }
         });
       });
@@ -1501,7 +1583,7 @@
           if (currentTooltipTarget === el) {
             showTooltip(el);
           }
-        }, 2000);
+        }, 1000);
       });
 
       el.addEventListener("mouseleave", hideTooltip);
@@ -1778,17 +1860,26 @@
         errorEl.textContent = msg.payload.message || "Unknown error";
       }
 
-      if (msg.type === "issue-dismissed") {
+      if (msg.type === "issue-resolved") {
         const { issueType, nodeId } = msg.payload;
+        removeIssueFromLatestResults(issueType, nodeId);
+        renderResults(latestResults);
+        statusEl.textContent = "Issue marked resolved. It will stay hidden until you manually recheck it.";
+      }
 
-        if (latestResults && Array.isArray(latestResults.issues)) {
-          latestResults.issues = latestResults.issues.filter((issue) => {
-            return !(issue.issue_type === issueType && issue.node_id === nodeId);
-          });
-          renderResults(latestResults);
+      if (msg.type === "issue-rechecked") {
+        const { issueType, nodeId, issue } = msg.payload;
+        clearRecheckingState(issueType, nodeId);
+
+        if (issue) {
+          upsertIssueInLatestResults(issue);
+          statusEl.textContent = "Issue rechecked and is still present.";
+        } else {
+          removeIssueFromLatestResults(issueType, nodeId);
+          statusEl.textContent = "Issue rechecked and is no longer present.";
         }
 
-        statusEl.textContent = "Issue marked resolved for this file until that element changes.";
+        renderResults(latestResults);
       }
 
       if (msg.type === "dismissed-issues-reset") {

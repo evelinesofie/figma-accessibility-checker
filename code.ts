@@ -627,20 +627,7 @@ figma.ui.onmessage = async (msg) => {
 			return;
 		}
 
-		console.log(
-			"SET DEMAND MODE:",
-			JSON.stringify({
-				uiMode,
-				previousMode,
-				newMode,
-				reason,
-				isAutomaticAdaptiveChange,
-			}),
-		);
-
 		await setDemandMode(newMode);
-
-		console.log("DEMAND MODE SAVED:", newMode);
 
 		figma.ui.postMessage({
 			type: "demand-mode",
@@ -805,7 +792,7 @@ figma.ui.onmessage = async (msg) => {
 		return;
 	}
 
-	if (msg.type === "dismiss-issue") {
+	if (msg.type === "resolve-issue") {
 		try {
 			const demandMode = await getDemandMode();
 			const uiMode = await getUiMode();
@@ -813,7 +800,7 @@ figma.ui.onmessage = async (msg) => {
 			const fileKey = getFileKey();
 
 			const response = await fetch(
-				"http://localhost:3001/dismiss-issue",
+				"http://localhost:3001/resolve-issue",
 				{
 					method: "POST",
 					headers: {
@@ -829,25 +816,24 @@ figma.ui.onmessage = async (msg) => {
 					body: JSON.stringify({
 						issue: msg.issue,
 						fileKey,
-						nodeFingerprint: msg.nodeFingerprint || null,
 					}),
 				},
 			);
 
 			if (!response.ok) {
 				const text = await response.text();
-				throw new Error(`Dismiss error ${response.status}: ${text}`);
+				throw new Error(`Resolve error ${response.status}: ${text}`);
 			}
 
 			figma.ui.postMessage({
-				type: "issue-dismissed",
+				type: "issue-resolved",
 				payload: {
 					issueType: msg.issue.issue_type,
 					nodeId: msg.issue.node_id,
 				},
 			});
 		} catch (error) {
-			console.error("Failed to dismiss issue:", error);
+			console.error("Failed to resolve issue:", error);
 
 			figma.ui.postMessage({
 				type: "check-error",
@@ -855,7 +841,76 @@ figma.ui.onmessage = async (msg) => {
 					message:
 						error instanceof Error
 							? error.message
-							: "Unknown dismiss error",
+							: "Unknown resolve error",
+				},
+			});
+		}
+
+		return;
+	}
+
+	if (msg.type === "recheck-issue") {
+		try {
+			const demandMode = await getDemandMode();
+			const uiMode = await getUiMode();
+			const deviceType = await getDeviceType();
+			const fileKey = getFileKey();
+			const selectionImagePayload = await buildSelectionImagePayload();
+			const data = collectSelectionData();
+
+			const response = await fetch(
+				"http://localhost:3001/recheck-issue",
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Session-Id": msg.sessionId || "unknown",
+						"X-User-Id": msg.userId || (await getOrCreateUserId()),
+						"X-Condition": msg.condition || "unknown",
+						"X-UI-Mode": uiMode,
+						"X-Demand-Mode": demandMode,
+						"X-Device-Type": deviceType,
+						"X-File-Key": fileKey,
+					},
+					body: JSON.stringify({
+						issue: msg.issue,
+						fileKey,
+						screen: data,
+						selectionImage: {
+							imageBase64: selectionImagePayload.imageBase64,
+							mimeType: selectionImagePayload.mimeType,
+							source: selectionImagePayload.source,
+							error: selectionImagePayload.error || null,
+						},
+						meta: {
+							fileKey,
+							deviceType,
+						},
+					}),
+				},
+			);
+
+			if (!response.ok) {
+				const text = await response.text();
+				throw new Error(`Recheck error ${response.status}: ${text}`);
+			}
+
+			const payload = await response.json();
+
+			figma.ui.postMessage({
+				type: "issue-rechecked",
+				payload,
+			});
+		} catch (error) {
+			console.error("Failed to recheck issue:", error);
+
+			figma.ui.postMessage({
+				type: "check-error",
+				payload: {
+					message:
+						error instanceof Error
+							? error.message
+							: "Unknown recheck error",
 				},
 			});
 		}
