@@ -239,7 +239,11 @@ function makeCompactScreen(screen) {
 	};
 }
 
-function buildInitialReviewPrompt(compactScreen, hasSelectionImage) {
+function buildInitialReviewPrompt(
+	compactScreen,
+	hasSelectionImage,
+	deviceType,
+) {
 	return `
 You are an AI accessibility reviewer for Figma screens.
 
@@ -293,6 +297,15 @@ Use these issue types only:
 - "weak_visual_hierarchy"
 - "other"
 
+Device context:
+- This prototype should be reviewed as a ${deviceType} interface.
+- Desktop interfaces should be judged primarily for mouse/trackpad interaction, readability, clarity, scanability, spacing, and visual hierarchy.
+- Mobile and tablet interfaces may be judged using touch-oriented heuristics.
+- Only use "small_touch_target" when touch interaction is genuinely relevant for the chosen device context.
+- For desktop reviews, do NOT use touch language such as "tap", "finger", or "touch target".
+- For desktop reviews, use desktop wording such as "click", "click target", "small control", or "hard to click".
+- For desktop reviews, avoid reporting "small_touch_target" unless there is exceptionally strong reason to treat the prototype as touch-first despite the selected device type.
+
 Image note:
 - ${hasSelectionImage ? "A rendered preview image is included." : "No preview image is included."}
 - Use the image for context, but use the structured data for exact ids and properties.
@@ -302,7 +315,7 @@ ${JSON.stringify(compactScreen, null, 2)}
   `.trim();
 }
 
-function buildBatchNodeUpdatePrompt(changedNodes) {
+function buildBatchNodeUpdatePrompt(changedNodes, deviceType) {
 	return `
 You are updating a previous AI accessibility review for multiple changed Figma nodes.
 
@@ -356,6 +369,13 @@ General rules:
 - node_name must exactly match the current node name.
 - Do not report duplicate issue types for the same node.
 - A node may return zero issues if no issue remains justified.
+
+Device context:
+- This prototype should be reviewed as a ${deviceType} interface.
+- Desktop interfaces should not receive touch-target complaints unless the change clearly introduces a device-relevant interaction problem.
+- Only use "small_touch_target" when touch interaction is genuinely relevant for the chosen device context.
+- For desktop reviews, do NOT use touch language such as "tap", "finger", or "touch target".
+- For desktop reviews, use desktop wording such as "click", "click target", "small control", or "hard to click".
 
 Changed nodes:
 ${JSON.stringify(changedNodes, null, 2)}
@@ -640,12 +660,17 @@ async function analyzeScreenWithModel(
 	nodeIndex,
 	client,
 	selectionImage,
+	deviceType,
 ) {
 	const hasSelectionImage =
 		typeof selectionImage?.imageBase64 === "string" &&
 		selectionImage.imageBase64.length > 0;
 
-	const prompt = buildInitialReviewPrompt(compactScreen, hasSelectionImage);
+	const prompt = buildInitialReviewPrompt(
+		compactScreen,
+		hasSelectionImage,
+		deviceType,
+	);
 
 	const content = [
 		{
@@ -695,7 +720,11 @@ async function analyzeScreenWithModel(
 	};
 }
 
-async function updateChangedNodesWithModel({ changedNodes, client }) {
+async function updateChangedNodesWithModel({
+	changedNodes,
+	client,
+	deviceType,
+}) {
 	if (!Array.isArray(changedNodes) || changedNodes.length === 0) {
 		return {
 			overall_assessment: "",
@@ -712,7 +741,10 @@ async function updateChangedNodesWithModel({ changedNodes, client }) {
 		previousIssues: item.previousIssues,
 	}));
 
-	const prompt = buildBatchNodeUpdatePrompt(normalizedChangedNodes);
+	const prompt = buildBatchNodeUpdatePrompt(
+		normalizedChangedNodes,
+		deviceType,
+	);
 
 	const response = await client.responses.create({
 		model: "gpt-5-mini",
@@ -814,6 +846,10 @@ app.post("/analyze", async (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const deviceType =
+			req.headers["x-device-type"] ||
+			req.body?.meta?.deviceType ||
+			"desktop";
 		const fileKey =
 			req.headers["x-file-key"] ||
 			req.body?.meta?.fileKey ||
@@ -824,6 +860,7 @@ app.post("/analyze", async (req, res) => {
 			sessionId,
 			condition,
 			demandMode,
+			deviceType,
 			fileKey,
 			eventType: "run_check",
 			selectionCount: compactScreen.selectionCount,
@@ -859,19 +896,35 @@ app.post("/analyze", async (req, res) => {
 
 			const cachedEntry = fileReviewCache[node.id];
 
+			// Never reviewed before
 			if (!cachedEntry) {
 				newNodesToReview.push(node);
 				continue;
 			}
 
-			if (
-				cachedEntry.fingerprint === currentFingerprint &&
-				Array.isArray(cachedEntry.issues)
-			) {
-				reusedIssues.push(...cachedEntry.issues);
+			const cachedFingerprint = cachedEntry.fingerprint || null;
+			const cachedIssues = Array.isArray(cachedEntry.issues)
+				? cachedEntry.issues
+				: [];
+			const cachedDeviceType = cachedEntry.deviceType || "desktop";
+
+			const sameFingerprint = cachedFingerprint === currentFingerprint;
+			const sameDeviceType = cachedDeviceType === deviceType;
+
+			// Same node state + same device context => safe to reuse
+			if (sameFingerprint && sameDeviceType && cachedIssues.length >= 0) {
+				reusedIssues.push(...cachedIssues);
 				continue;
 			}
 
+			// Same node state + different device context => force fresh review
+			// This is the critical fix for stale "tap"/touch phrasing.
+			if (sameFingerprint && !sameDeviceType) {
+				newNodesToReview.push(node);
+				continue;
+			}
+
+			// Real node change => use stable changed-node update flow
 			const currentNode = extractComparableNodeSnapshot(node);
 			const previousNode =
 				extractComparableNodeSnapshot(cachedEntry.nodeSnapshot) ||
@@ -885,14 +938,13 @@ app.post("/analyze", async (req, res) => {
 			changedNodesToReview.push({
 				currentNode,
 				previousNode,
-				previousIssues: Array.isArray(cachedEntry.issues)
-					? cachedEntry.issues
-					: [],
-				previousFingerprint: cachedEntry.fingerprint || null,
+				previousIssues: cachedIssues,
+				previousFingerprint: cachedFingerprint,
 				changedFields: getChangedFields(previousNode, currentNode),
 			});
 		}
 
+		// Remove cache entries for nodes no longer in the current selection
 		for (const cachedNodeId of Object.keys(fileReviewCache)) {
 			if (!currentNodeIds.has(cachedNodeId)) {
 				delete fileReviewCache[cachedNodeId];
@@ -913,6 +965,7 @@ app.post("/analyze", async (req, res) => {
 				subNodeIndex,
 				client,
 				selectionImage,
+				deviceType,
 			);
 
 			newNodeIssues = analysis.issues;
@@ -937,6 +990,7 @@ app.post("/analyze", async (req, res) => {
 					nodeId: node.id,
 					nodeName: node.name,
 					fingerprint: currentFingerprint,
+					deviceType,
 					nodeSnapshot: extractComparableNodeSnapshot(node),
 					issues: issuesByNodeId.get(node.id) || [],
 					reviewedAt: new Date().toISOString(),
@@ -948,6 +1002,7 @@ app.post("/analyze", async (req, res) => {
 			const updatedBatch = await updateChangedNodesWithModel({
 				changedNodes: changedNodesToReview,
 				client,
+				deviceType,
 			});
 
 			if (!overallAssessment) {
@@ -983,6 +1038,7 @@ app.post("/analyze", async (req, res) => {
 					nodeId: currentNode.id,
 					nodeName: currentNode.name,
 					fingerprint: currentFingerprint,
+					deviceType,
 					nodeSnapshot: extractComparableNodeSnapshot(currentNode),
 					issues: updatedNode.issues,
 					reviewedAt: new Date().toISOString(),
@@ -1049,6 +1105,7 @@ app.post("/analyze", async (req, res) => {
 			sessionId,
 			condition,
 			demandMode,
+			deviceType,
 			fileKey,
 			eventType: "check_completed",
 			issueCount: Array.isArray(parsed.issues) ? parsed.issues.length : 0,
@@ -1095,6 +1152,8 @@ app.post("/log", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const deviceType =
+			req.headers["x-device-type"] || req.body.deviceType || "desktop";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -1103,6 +1162,7 @@ app.post("/log", (req, res) => {
 			sessionId,
 			condition,
 			demandMode,
+			deviceType,
 			fileKey,
 			...req.body,
 		};
@@ -1127,6 +1187,8 @@ app.post("/dismiss-issue", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const deviceType =
+			req.headers["x-device-type"] || req.body.deviceType || "desktop";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -1150,6 +1212,7 @@ app.post("/dismiss-issue", (req, res) => {
 			sessionId,
 			condition,
 			demandMode,
+			deviceType,
 			fileKey,
 			eventType: "issue_dismissed",
 			issueType: issue.issue_type,
@@ -1178,6 +1241,8 @@ app.post("/reset-dismissed-issues", (req, res) => {
 		const sessionId = req.headers["x-session-id"] || "unknown";
 		const condition = req.headers["x-condition"] || "unknown";
 		const demandMode = req.headers["x-demand-mode"] || "unknown";
+		const deviceType =
+			req.headers["x-device-type"] || req.body.deviceType || "desktop";
 		const fileKey =
 			req.headers["x-file-key"] || req.body.fileKey || "unknown-file";
 
@@ -1188,6 +1253,7 @@ app.post("/reset-dismissed-issues", (req, res) => {
 			sessionId,
 			condition,
 			demandMode,
+			deviceType,
 			fileKey,
 			eventType: "dismissed_issues_reset",
 			timestamp: new Date().toISOString(),

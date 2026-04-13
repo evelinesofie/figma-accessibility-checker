@@ -22,6 +22,7 @@ type ScreenSummary = {
 
 type DemandMode = "on_demand" | "low_demand" | "always_visible";
 type UiMode = "debug" | "real";
+type DeviceType = "desktop" | "tablet" | "mobile";
 
 type SelectionImagePayload = {
 	imageBase64: string | null;
@@ -32,6 +33,7 @@ type SelectionImagePayload = {
 
 const DEFAULT_DEMAND_MODE: DemandMode = "on_demand";
 const DEFAULT_UI_MODE: UiMode = "debug";
+const DEFAULT_DEVICE_TYPE: DeviceType = "desktop";
 const EXPORT_MAX_WIDTH = 1000;
 const TEMP_EXPORT_PADDING = 24;
 
@@ -49,6 +51,10 @@ function isDemandMode(value: unknown): value is DemandMode {
 
 function isUiMode(value: unknown): value is UiMode {
 	return value === "debug" || value === "real";
+}
+
+function isDeviceType(value: unknown): value is DeviceType {
+	return value === "desktop" || value === "tablet" || value === "mobile";
 }
 
 async function getDemandMode(): Promise<DemandMode> {
@@ -77,6 +83,20 @@ async function getUiMode(): Promise<UiMode> {
 
 async function setUiMode(mode: UiMode): Promise<void> {
 	await figma.clientStorage.setAsync("ui_mode", mode);
+}
+
+async function getDeviceType(): Promise<DeviceType> {
+	const existing = await figma.clientStorage.getAsync("device_type");
+	if (isDeviceType(existing)) {
+		return existing;
+	}
+
+	await figma.clientStorage.setAsync("device_type", DEFAULT_DEVICE_TYPE);
+	return DEFAULT_DEVICE_TYPE;
+}
+
+async function setDeviceType(deviceType: DeviceType): Promise<void> {
+	await figma.clientStorage.setAsync("device_type", deviceType);
 }
 
 function createId(prefix: string): string {
@@ -383,6 +403,7 @@ async function sendSelectionToUI() {
 	const userId = await getOrCreateUserId();
 	const demandMode = await getDemandMode();
 	const uiMode = await getUiMode();
+	const deviceType = await getDeviceType();
 
 	figma.ui.postMessage({
 		type: "selection-data",
@@ -407,6 +428,11 @@ async function sendSelectionToUI() {
 	figma.ui.postMessage({
 		type: "demand-mode",
 		payload: { mode: demandMode },
+	});
+
+	figma.ui.postMessage({
+		type: "device-type",
+		payload: { deviceType },
 	});
 }
 
@@ -446,6 +472,7 @@ figma.ui.onmessage = async (msg) => {
 		const condition = msg.condition || "unknown";
 		const demandMode = await getDemandMode();
 		const uiMode = await getUiMode();
+		const deviceType = await getDeviceType();
 		const fileKey = getFileKey();
 
 		figma.ui.postMessage({
@@ -480,6 +507,7 @@ figma.ui.onmessage = async (msg) => {
 					"X-Condition": condition,
 					"X-UI-Mode": uiMode,
 					"X-Demand-Mode": demandMode,
+					"X-Device-Type": deviceType,
 					"X-File-Key": fileKey,
 				},
 				body: JSON.stringify({
@@ -496,6 +524,7 @@ figma.ui.onmessage = async (msg) => {
 						condition,
 						uiMode,
 						demandMode,
+						deviceType,
 						fileKey,
 					},
 				}),
@@ -532,6 +561,7 @@ figma.ui.onmessage = async (msg) => {
 		try {
 			const demandMode = await getDemandMode();
 			const uiMode = await getUiMode();
+			const deviceType = await getDeviceType();
 			const fileKey = getFileKey();
 
 			await fetch("http://localhost:3001/log", {
@@ -543,12 +573,14 @@ figma.ui.onmessage = async (msg) => {
 					"X-Condition": msg.condition || "unknown",
 					"X-UI-Mode": uiMode,
 					"X-Demand-Mode": demandMode,
+					"X-Device-Type": deviceType,
 					"X-File-Key": fileKey,
 				},
 				body: JSON.stringify(
 					Object.assign({}, msg.event, {
 						uiMode,
 						demandMode,
+						deviceType,
 						fileKey,
 					}),
 				),
@@ -562,6 +594,7 @@ figma.ui.onmessage = async (msg) => {
 
 	if (msg.type === "set-demand-mode") {
 		const uiMode = await getUiMode();
+		const deviceType = await getDeviceType();
 		const newMode = msg.mode;
 		const previousMode = await getDemandMode();
 		const userId = await getOrCreateUserId();
@@ -577,7 +610,6 @@ figma.ui.onmessage = async (msg) => {
 		const isAutomaticAdaptiveChange =
 			reason === "threshold_rule_adaptation";
 
-		// In real mode, block manual mode switching but allow adaptive assignment
 		if (uiMode === "real" && !isAutomaticAdaptiveChange) {
 			const lockedMode = await getDemandMode();
 			figma.ui.postMessage({
@@ -625,6 +657,7 @@ figma.ui.onmessage = async (msg) => {
 					"X-Condition": msg.condition || "unknown",
 					"X-UI-Mode": uiMode,
 					"X-Demand-Mode": newMode,
+					"X-Device-Type": deviceType,
 					"X-File-Key": getFileKey(),
 				},
 				body: JSON.stringify({
@@ -634,6 +667,7 @@ figma.ui.onmessage = async (msg) => {
 					trigger: reason,
 					timestamp: new Date().toISOString(),
 					fileKey: getFileKey(),
+					deviceType,
 				}),
 			});
 		} catch (error) {
@@ -656,6 +690,61 @@ figma.ui.onmessage = async (msg) => {
 			type: "ui-mode",
 			payload: { mode: newMode },
 		});
+
+		return;
+	}
+
+	if (msg.type === "set-device-type") {
+		const newDeviceType = msg.deviceType;
+		const demandMode = await getDemandMode();
+		const uiMode = await getUiMode();
+		const previousDeviceType = await getDeviceType();
+		const userId = await getOrCreateUserId();
+		const fileKey = getFileKey();
+
+		if (!isDeviceType(newDeviceType)) {
+			return;
+		}
+
+		if (newDeviceType === previousDeviceType) {
+			figma.ui.postMessage({
+				type: "device-type",
+				payload: { deviceType: newDeviceType },
+			});
+			return;
+		}
+
+		await setDeviceType(newDeviceType);
+
+		figma.ui.postMessage({
+			type: "device-type",
+			payload: { deviceType: newDeviceType },
+		});
+
+		try {
+			await fetch("http://localhost:3001/log", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Session-Id": msg.sessionId || "unknown",
+					"X-User-Id": msg.userId || userId,
+					"X-Condition": msg.condition || "unknown",
+					"X-UI-Mode": uiMode,
+					"X-Demand-Mode": demandMode,
+					"X-Device-Type": newDeviceType,
+					"X-File-Key": fileKey,
+				},
+				body: JSON.stringify({
+					eventType: "device_type_persisted",
+					fromDeviceType: previousDeviceType,
+					toDeviceType: newDeviceType,
+					timestamp: new Date().toISOString(),
+					fileKey,
+				}),
+			});
+		} catch (error) {
+			console.error("Failed to log device type change:", error);
+		}
 
 		return;
 	}
@@ -720,6 +809,7 @@ figma.ui.onmessage = async (msg) => {
 		try {
 			const demandMode = await getDemandMode();
 			const uiMode = await getUiMode();
+			const deviceType = await getDeviceType();
 			const fileKey = getFileKey();
 
 			const response = await fetch(
@@ -733,6 +823,7 @@ figma.ui.onmessage = async (msg) => {
 						"X-Condition": msg.condition || "unknown",
 						"X-UI-Mode": uiMode,
 						"X-Demand-Mode": demandMode,
+						"X-Device-Type": deviceType,
 						"X-File-Key": fileKey,
 					},
 					body: JSON.stringify({
@@ -776,6 +867,7 @@ figma.ui.onmessage = async (msg) => {
 		try {
 			const demandMode = await getDemandMode();
 			const uiMode = await getUiMode();
+			const deviceType = await getDeviceType();
 			const fileKey = getFileKey();
 
 			const response = await fetch(
@@ -789,6 +881,7 @@ figma.ui.onmessage = async (msg) => {
 						"X-Condition": msg.condition || "unknown",
 						"X-UI-Mode": uiMode,
 						"X-Demand-Mode": demandMode,
+						"X-Device-Type": deviceType,
 						"X-File-Key": fileKey,
 					},
 					body: JSON.stringify({ fileKey }),
