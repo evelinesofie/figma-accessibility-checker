@@ -32,11 +32,14 @@ type SelectionImagePayload = {
 	error?: string | null;
 };
 
+type NodeImageMapPayload = Record<string, SelectionImagePayload>;
+
 const DEFAULT_DEMAND_MODE: DemandMode = "on_demand";
 const DEFAULT_UI_MODE: UiMode = "debug";
 const DEFAULT_DEVICE_TYPE: DeviceType = "desktop";
 const EXPORT_MAX_WIDTH = 1000;
 const TEMP_EXPORT_PADDING = 24;
+const MAX_NODE_IMAGE_EXPORTS = 20;
 
 function getFileKey(): string {
 	return figma.fileKey || "unknown-file";
@@ -225,15 +228,15 @@ function extractNode(node: SceneNode): ExtractedNode {
 	return base;
 }
 
-function collectSelectionData(): ScreenSummary {
+function collectSelectedSceneNodes(): SceneNode[] {
 	const selection = figma.currentPage.selection;
-	const nodes: ExtractedNode[] = [];
+	const nodes: SceneNode[] = [];
 	const seenIds = new Set<string>();
 
 	function pushNode(node: SceneNode) {
 		if (seenIds.has(node.id)) return;
 		seenIds.add(node.id);
-		nodes.push(extractNode(node));
+		nodes.push(node);
 	}
 
 	for (const selectedNode of selection) {
@@ -247,8 +250,14 @@ function collectSelectionData(): ScreenSummary {
 		}
 	}
 
+	return nodes;
+}
+
+function collectSelectionData(): ScreenSummary {
+	const nodes = collectSelectedSceneNodes().map(extractNode);
+
 	return {
-		selectionCount: selection.length,
+		selectionCount: figma.currentPage.selection.length,
 		nodes,
 	};
 }
@@ -264,6 +273,29 @@ function canCloneNode(
 		typeof (node as SceneNode & { clone?: () => SceneNode }).clone ===
 		"function"
 	);
+}
+
+function isNodeRenderableForImage(node: SceneNode): boolean {
+	if (!node.visible) return false;
+	if (!canExportNode(node)) return false;
+	if (!("width" in node) || !("height" in node)) return true;
+
+	return node.width > 0 && node.height > 0;
+}
+
+function prioritizeNodesForImageExport(nodes: SceneNode[]): SceneNode[] {
+	return [...nodes].sort((a, b) => {
+		const aArea =
+			"width" in a && "height" in a ? Math.round(a.width * a.height) : 0;
+		const bArea =
+			"width" in b && "height" in b ? Math.round(b.width * b.height) : 0;
+
+		if (bArea !== aArea) {
+			return bArea - aArea;
+		}
+
+		return a.name.localeCompare(b.name);
+	});
 }
 
 async function exportNodeAsPngBase64(node: SceneNode): Promise<string> {
@@ -418,6 +450,64 @@ async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
 	}
 }
 
+async function buildImagePayloadForNode(
+	node: SceneNode | null,
+): Promise<SelectionImagePayload> {
+	if (!node) {
+		return {
+			imageBase64: null,
+			mimeType: "image/png",
+			source: "node_not_found",
+			error: "Target node was not found.",
+		};
+	}
+
+	if (!isNodeRenderableForImage(node)) {
+		return {
+			imageBase64: null,
+			mimeType: "image/png",
+			source: "node_not_exportable",
+			error: `Node "${node.name}" is not exportable.`,
+		};
+	}
+
+	try {
+		const imageBase64 = await exportNodeAsPngBase64(node);
+		return {
+			imageBase64,
+			mimeType: "image/png",
+			source: "target_node_export",
+			error: null,
+		};
+	} catch (error) {
+		return {
+			imageBase64: null,
+			mimeType: "image/png",
+			source: "target_node_export_failed",
+			error:
+				error instanceof Error
+					? error.message
+					: "Unknown target node export error",
+		};
+	}
+}
+
+async function buildNodeImagePayloadMap(): Promise<NodeImageMapPayload> {
+	const allNodes = collectSelectedSceneNodes();
+	const eligibleNodes = prioritizeNodesForImageExport(
+		allNodes.filter(isNodeRenderableForImage),
+	).slice(0, MAX_NODE_IMAGE_EXPORTS);
+
+	const entries = await Promise.all(
+		eligibleNodes.map(async (node) => {
+			const payload = await buildImagePayloadForNode(node);
+			return [node.id, payload] as const;
+		}),
+	);
+
+	return Object.fromEntries(entries);
+}
+
 async function sendSelectionToUI() {
 	const data = collectSelectionData();
 	const imagePayload = await buildSelectionImagePayload();
@@ -499,24 +589,19 @@ figma.ui.onmessage = async (msg) => {
 		figma.ui.postMessage({
 			type: "status",
 			payload: {
-				message: "Preparing screen structure and selection preview...",
+				message: "Checking current screen...",
 			},
 		});
 
 		try {
-			const selectionImagePayload = await buildSelectionImagePayload();
+			const [selectionImagePayload, nodeImages] = await Promise.all([
+				buildSelectionImagePayload(),
+				buildNodeImagePayloadMap(),
+			]);
 
 			figma.ui.postMessage({
 				type: "selection-image",
 				payload: selectionImagePayload,
-			});
-
-			figma.ui.postMessage({
-				type: "status",
-				payload: {
-					message:
-						"Sending screen data and preview image to backend...",
-				},
 			});
 
 			const response = await fetch("http://localhost:3001/analyze", {
@@ -539,6 +624,7 @@ figma.ui.onmessage = async (msg) => {
 						source: selectionImagePayload.source,
 						error: selectionImagePayload.error || null,
 					},
+					nodeImages,
 					meta: {
 						sessionId,
 						userId,
@@ -553,7 +639,6 @@ figma.ui.onmessage = async (msg) => {
 
 			if (!response.ok) {
 				const text = await response.text();
-				console.log("Raw backend error:", text);
 				throw new Error(`Backend error ${response.status}: ${text}`);
 			}
 
@@ -784,15 +869,14 @@ figma.ui.onmessage = async (msg) => {
 				await figma.setCurrentPageAsync(containingPage);
 			}
 
-			figma.currentPage.selection = [node];
 			figma.viewport.scrollAndZoomIntoView([node]);
 
 			figma.ui.postMessage({
 				type: "status",
-				payload: { message: `Selected: ${node.name}` },
+				payload: { message: `Focused: ${node.name}` },
 			});
 		} catch (error) {
-			console.error("Failed to select issue node:", error);
+			console.error("Failed to focus issue node:", error);
 
 			figma.ui.postMessage({
 				type: "check-error",
@@ -876,8 +960,32 @@ figma.ui.onmessage = async (msg) => {
 			const uiMode = await getUiMode();
 			const deviceType = await getDeviceType();
 			const fileKey = getFileKey();
-			const selectionImagePayload = await buildSelectionImagePayload();
 			const data = collectSelectionData();
+
+			const targetIssue =
+				msg && typeof msg === "object" && "issue" in msg
+					? msg.issue
+					: null;
+
+			const targetNodeId =
+				targetIssue &&
+				typeof targetIssue === "object" &&
+				"node_id" in targetIssue &&
+				typeof (targetIssue as { node_id?: unknown }).node_id ===
+					"string"
+					? (targetIssue as { node_id: string }).node_id
+					: "";
+
+			const targetNode = targetNodeId
+				? await findSceneNodeById(targetNodeId)
+				: null;
+
+			const [selectionImagePayload, nodeImagePayload] = await Promise.all(
+				[
+					buildSelectionImagePayload(),
+					buildImagePayloadForNode(targetNode),
+				],
+			);
 
 			const response = await fetch(
 				"http://localhost:3001/recheck-issue",
@@ -902,6 +1010,12 @@ figma.ui.onmessage = async (msg) => {
 							mimeType: selectionImagePayload.mimeType,
 							source: selectionImagePayload.source,
 							error: selectionImagePayload.error || null,
+						},
+						nodeImage: {
+							imageBase64: nodeImagePayload.imageBase64,
+							mimeType: nodeImagePayload.mimeType,
+							source: nodeImagePayload.source,
+							error: nodeImagePayload.error || null,
 						},
 						meta: {
 							fileKey,

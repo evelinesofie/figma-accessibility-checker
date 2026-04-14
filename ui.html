@@ -874,6 +874,48 @@
         .replace(/'/g, "&#039;");
     }
 
+    function createStableHash(value) {
+      let hash = 0;
+      const input = JSON.stringify(value);
+
+      for (let i = 0; i < input.length; i += 1) {
+        hash = (hash << 5) - hash + input.charCodeAt(i);
+        hash |= 0;
+      }
+
+      return String(hash);
+    }
+
+    function createScreenFamilySignatureFromSelectionData(data, deviceType) {
+      const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+
+      const stableNodes = nodes
+        .map((node) => ({
+          type: node.type,
+          name: node.name || "",
+          x: typeof node.x === "number" ? Math.round(node.x / 20) : 0,
+          y: typeof node.y === "number" ? Math.round(node.y / 20) : 0,
+        }))
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+      const textNodes = nodes.filter((node) => node.type === "TEXT").length;
+
+      return createStableHash({
+        deviceType,
+        selectionCount: data?.selectionCount ?? 0,
+        totalNodes: nodes.length,
+        textNodes,
+        nodes: stableNodes,
+      });
+    }
+
+    function getNodeFingerprintFromSelectionData(data, nodeId) {
+      const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+      const node = nodes.find((item) => item.id === nodeId);
+      return node?.fingerprint || null;
+    }
+
+
     function syncModeInputs() {
       modeInputs.forEach((input) => {
         input.checked = input.value === currentDemandMode;
@@ -1396,6 +1438,21 @@
       const issue = latestResults?.issues?.[issueIndex];
       if (!issue) return;
 
+      if (!latestSelectionData) {
+        statusEl.textContent = "Selection data is not ready yet.";
+        return;
+      }
+
+      const nodeFingerprint = getNodeFingerprintFromSelectionData(
+        latestSelectionData,
+        issue.node_id
+      );
+
+      const screenFamilySignature = createScreenFamilySignatureFromSelectionData(
+        latestSelectionData,
+        currentDeviceType
+      );
+
       parent.postMessage(
         {
           pluginMessage: {
@@ -1407,7 +1464,9 @@
               issue_type: issue.issue_type,
               node_id: issue.node_id,
               node_name: issue.node_name,
-            }
+            },
+            nodeFingerprint,
+            screenFamilySignature,
           },
         },
         "*"
@@ -1420,7 +1479,9 @@
         issueNode: issue.node_name || "",
         issueType: issue.issue_type || "",
         nodeId: issue.node_id || "",
-        severity: issue.severity || ""
+        severity: issue.severity || "",
+        screenFamilySignature,
+        hasNodeFingerprint: !!nodeFingerprint,
       });
     }
 
@@ -1864,7 +1925,7 @@
         const { issueType, nodeId } = msg.payload;
         removeIssueFromLatestResults(issueType, nodeId);
         renderResults(latestResults);
-        statusEl.textContent = "Issue marked resolved. It will stay hidden until you manually recheck it.";
+        statusEl.textContent = "Element marked resolved. It will stay suppressed until that element changes.";
       }
 
       if (msg.type === "issue-rechecked") {
