@@ -41,6 +41,8 @@ const EXPORT_MAX_WIDTH = 1000;
 const TEMP_EXPORT_PADDING = 24;
 const MAX_NODE_IMAGE_EXPORTS = 20;
 
+let activeAnalysisSelectionIds: string[] = [];
+
 function getFileKey(): string {
 	return figma.fileKey || "unknown-file";
 }
@@ -63,9 +65,7 @@ function isDeviceType(value: unknown): value is DeviceType {
 
 async function getDemandMode(): Promise<DemandMode> {
 	const existing = await figma.clientStorage.getAsync("demand_mode");
-	if (isDemandMode(existing)) {
-		return existing;
-	}
+	if (isDemandMode(existing)) return existing;
 
 	await figma.clientStorage.setAsync("demand_mode", DEFAULT_DEMAND_MODE);
 	return DEFAULT_DEMAND_MODE;
@@ -77,9 +77,7 @@ async function setDemandMode(mode: DemandMode): Promise<void> {
 
 async function getUiMode(): Promise<UiMode> {
 	const existing = await figma.clientStorage.getAsync("ui_mode");
-	if (isUiMode(existing)) {
-		return existing;
-	}
+	if (isUiMode(existing)) return existing;
 
 	await figma.clientStorage.setAsync("ui_mode", DEFAULT_UI_MODE);
 	return DEFAULT_UI_MODE;
@@ -91,9 +89,7 @@ async function setUiMode(mode: UiMode): Promise<void> {
 
 async function getDeviceType(): Promise<DeviceType> {
 	const existing = await figma.clientStorage.getAsync("device_type");
-	if (isDeviceType(existing)) {
-		return existing;
-	}
+	if (isDeviceType(existing)) return existing;
 
 	await figma.clientStorage.setAsync("device_type", DEFAULT_DEVICE_TYPE);
 	return DEFAULT_DEVICE_TYPE;
@@ -228,8 +224,46 @@ function extractNode(node: SceneNode): ExtractedNode {
 	return base;
 }
 
-function collectSelectedSceneNodes(): SceneNode[] {
-	const selection = figma.currentPage.selection;
+async function findSceneNodeById(nodeId: string): Promise<SceneNode | null> {
+	const node = await figma.getNodeByIdAsync(nodeId);
+
+	if (!node) return null;
+	if (node.type === "PAGE" || node.type === "DOCUMENT") return null;
+
+	return node as SceneNode;
+}
+
+function getContainingPage(node: BaseNode): PageNode | null {
+	let current: BaseNode | null = node;
+
+	while (current) {
+		if (current.type === "PAGE") {
+			return current as PageNode;
+		}
+		current = current.parent;
+	}
+
+	return null;
+}
+
+async function resolveSceneNodesFromIds(
+	ids: readonly string[],
+): Promise<SceneNode[]> {
+	const result: SceneNode[] = [];
+	const seenIds = new Set<string>();
+
+	for (const id of ids) {
+		const node = await findSceneNodeById(id);
+		if (!node) continue;
+		if (seenIds.has(node.id)) continue;
+		seenIds.add(node.id);
+		result.push(node);
+	}
+
+	return result;
+}
+
+function collectSceneNodesFromRoots(roots: readonly SceneNode[]): SceneNode[] {
 	const nodes: SceneNode[] = [];
 	const seenIds = new Set<string>();
 
@@ -239,11 +273,11 @@ function collectSelectedSceneNodes(): SceneNode[] {
 		nodes.push(node);
 	}
 
-	for (const selectedNode of selection) {
-		pushNode(selectedNode);
+	for (const root of roots) {
+		pushNode(root);
 
-		if ("findAll" in selectedNode) {
-			const descendants = selectedNode.findAll(() => true);
+		if ("findAll" in root) {
+			const descendants = root.findAll(() => true);
 			for (const child of descendants) {
 				pushNode(child);
 			}
@@ -253,13 +287,39 @@ function collectSelectedSceneNodes(): SceneNode[] {
 	return nodes;
 }
 
-function collectSelectionData(): ScreenSummary {
-	const nodes = collectSelectedSceneNodes().map(extractNode);
+function getLiveTopLevelSelection(): SceneNode[] {
+	return [...figma.currentPage.selection];
+}
+
+async function getActiveAnalysisRoots(): Promise<SceneNode[]> {
+	if (activeAnalysisSelectionIds.length > 0) {
+		const restored = await resolveSceneNodesFromIds(
+			activeAnalysisSelectionIds,
+		);
+		if (restored.length > 0) {
+			return restored;
+		}
+	}
+
+	return getLiveTopLevelSelection();
+}
+
+async function collectSelectionDataFromActiveAnalysis(): Promise<ScreenSummary> {
+	const roots = await getActiveAnalysisRoots();
+	const nodes = collectSceneNodesFromRoots(roots).map(extractNode);
 
 	return {
-		selectionCount: figma.currentPage.selection.length,
+		selectionCount: roots.length,
 		nodes,
 	};
+}
+
+function getNodeFingerprintFromScreen(
+	screen: ScreenSummary,
+	nodeId: string,
+): string | null {
+	const node = screen.nodes.find((item) => item.id === nodeId);
+	return node ? node.fingerprint : null;
 }
 
 function canExportNode(node: SceneNode): node is SceneNode & ExportMixin {
@@ -385,10 +445,10 @@ async function exportMultiSelectionAsPngBase64(
 	}
 }
 
-async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
-	const selection = figma.currentPage.selection;
-
-	if (!selection.length) {
+async function buildSelectionImagePayloadFromRoots(
+	roots: readonly SceneNode[],
+): Promise<SelectionImagePayload> {
+	if (!roots.length) {
 		return {
 			imageBase64: null,
 			mimeType: "image/png",
@@ -398,8 +458,8 @@ async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
 	}
 
 	try {
-		if (selection.length === 1) {
-			const imageBase64 = await exportNodeAsPngBase64(selection[0]);
+		if (roots.length === 1) {
+			const imageBase64 = await exportNodeAsPngBase64(roots[0]);
 			return {
 				imageBase64,
 				mimeType: "image/png",
@@ -409,8 +469,7 @@ async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
 		}
 
 		try {
-			const imageBase64 =
-				await exportMultiSelectionAsPngBase64(selection);
+			const imageBase64 = await exportMultiSelectionAsPngBase64(roots);
 			return {
 				imageBase64,
 				mimeType: "image/png",
@@ -423,7 +482,7 @@ async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
 				multiError,
 			);
 
-			const fallbackNode = selection.find(canExportNode);
+			const fallbackNode = roots.find(canExportNode);
 			if (!fallbackNode) {
 				throw multiError;
 			}
@@ -448,6 +507,11 @@ async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
 				error instanceof Error ? error.message : "Unknown export error",
 		};
 	}
+}
+
+async function buildSelectionImagePayload(): Promise<SelectionImagePayload> {
+	const roots = await getActiveAnalysisRoots();
+	return buildSelectionImagePayloadFromRoots(roots);
 }
 
 async function buildImagePayloadForNode(
@@ -493,7 +557,9 @@ async function buildImagePayloadForNode(
 }
 
 async function buildNodeImagePayloadMap(): Promise<NodeImageMapPayload> {
-	const allNodes = collectSelectedSceneNodes();
+	const roots = await getActiveAnalysisRoots();
+	const allNodes = collectSceneNodesFromRoots(roots);
+
 	const eligibleNodes = prioritizeNodesForImageExport(
 		allNodes.filter(isNodeRenderableForImage),
 	).slice(0, MAX_NODE_IMAGE_EXPORTS);
@@ -508,9 +574,24 @@ async function buildNodeImagePayloadMap(): Promise<NodeImageMapPayload> {
 	return Object.fromEntries(entries);
 }
 
+function setActiveAnalysisSelectionFromCurrentSelection(): void {
+	activeAnalysisSelectionIds = figma.currentPage.selection.map(
+		(node) => node.id,
+	);
+}
+
 async function sendSelectionToUI() {
-	const data = collectSelectionData();
-	const imagePayload = await buildSelectionImagePayload();
+	const liveSelectionData: ScreenSummary = {
+		selectionCount: figma.currentPage.selection.length,
+		nodes: collectSceneNodesFromRoots(getLiveTopLevelSelection()).map(
+			extractNode,
+		),
+	};
+
+	const imagePayload = await buildSelectionImagePayloadFromRoots(
+		getLiveTopLevelSelection(),
+	);
+
 	const userId = await getOrCreateUserId();
 	const demandMode = await getDemandMode();
 	const uiMode = await getUiMode();
@@ -518,7 +599,7 @@ async function sendSelectionToUI() {
 
 	figma.ui.postMessage({
 		type: "selection-data",
-		payload: data,
+		payload: liveSelectionData,
 	});
 
 	figma.ui.postMessage({
@@ -547,28 +628,6 @@ async function sendSelectionToUI() {
 	});
 }
 
-async function findSceneNodeById(nodeId: string): Promise<SceneNode | null> {
-	const node = await figma.getNodeByIdAsync(nodeId);
-
-	if (!node) return null;
-	if (node.type === "PAGE" || node.type === "DOCUMENT") return null;
-
-	return node as SceneNode;
-}
-
-function getContainingPage(node: BaseNode): PageNode | null {
-	let current: BaseNode | null = node;
-
-	while (current) {
-		if (current.type === "PAGE") {
-			return current as PageNode;
-		}
-		current = current.parent;
-	}
-
-	return null;
-}
-
 figma.on("selectionchange", async () => {
 	await sendSelectionToUI();
 });
@@ -577,7 +636,9 @@ figma.ui.onmessage = async (msg) => {
 	console.log("CODE got message:", JSON.stringify(msg));
 
 	if (msg.type === "run-gpt-check") {
-		const data = collectSelectionData();
+		setActiveAnalysisSelectionFromCurrentSelection();
+
+		const data = await collectSelectionDataFromActiveAnalysis();
 		const sessionId = msg.sessionId || "unknown";
 		const userId = await getOrCreateUserId();
 		const condition = msg.condition || "unknown";
@@ -869,11 +930,12 @@ figma.ui.onmessage = async (msg) => {
 				await figma.setCurrentPageAsync(containingPage);
 			}
 
+			figma.currentPage.selection = [node];
 			figma.viewport.scrollAndZoomIntoView([node]);
 
 			figma.ui.postMessage({
 				type: "status",
-				payload: { message: `Focused: ${node.name}` },
+				payload: { message: `Selected: ${node.name}` },
 			});
 		} catch (error) {
 			console.error("Failed to focus issue node:", error);
@@ -960,7 +1022,7 @@ figma.ui.onmessage = async (msg) => {
 			const uiMode = await getUiMode();
 			const deviceType = await getDeviceType();
 			const fileKey = getFileKey();
-			const data = collectSelectionData();
+			const data = await collectSelectionDataFromActiveAnalysis();
 
 			const targetIssue =
 				msg && typeof msg === "object" && "issue" in msg
@@ -1082,6 +1144,8 @@ figma.ui.onmessage = async (msg) => {
 				const text = await response.text();
 				throw new Error(`Reset error ${response.status}: ${text}`);
 			}
+
+			activeAnalysisSelectionIds = [];
 
 			figma.ui.postMessage({
 				type: "dismissed-issues-reset",
