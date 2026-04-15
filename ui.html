@@ -1033,13 +1033,11 @@
 
       const issues = payload.issues || [];
       const summary = payload.summary || {};
-      const overall = payload.overall_assessment || "";
 
       if (!issues.length) {
         results.innerHTML = `
-        <div>No issues returned.</div>
-        <div class="muted">${escapeHtml(overall)}</div>
-      `;
+          <div>No issues found.</div>
+        `;
         return;
       }
 
@@ -1049,7 +1047,6 @@
         Text nodes: ${summary.text_nodes ?? "?"}<br>
         Issues found: ${issues.length}
       </div>
-      ${overall ? `<p><strong>Overall:</strong> ${escapeHtml(overall)}</p>` : ""}
       ${issues.map((issue, index) => {
         const state = ensureIssueState(issue);
         const expandedClass = state.expanded ? "issue-expanded" : "";
@@ -1817,7 +1814,7 @@
       finalizeActiveCalibrationOpportunity("ran_new_check");
 
       errorEl.textContent = "";
-      statusEl.textContent = "Running accessibility check with structure + preview image...";
+      statusEl.textContent = "Checking current screen...";
       setLoading(true);
 
       postLogEvent({

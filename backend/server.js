@@ -557,7 +557,6 @@ Return ONLY valid JSON with this exact structure:
     "total_nodes": number,
     "text_nodes": number
   },
-  "overall_assessment": string,
   "issues": [
     {
       "issue_type": "small_text" | "low_contrast" | "small_touch_target" | "unclear_label" | "weak_visual_hierarchy" | "other",
@@ -726,7 +725,6 @@ function buildReviewResponseSchema(name) {
 					},
 					required: ["total_nodes", "text_nodes"],
 				},
-				overall_assessment: { type: "string" },
 				issues: {
 					type: "array",
 					items: {
@@ -768,7 +766,7 @@ function buildReviewResponseSchema(name) {
 					},
 				},
 			},
-			required: ["summary", "overall_assessment", "issues"],
+			required: ["summary", "issues"],
 		},
 	};
 }
@@ -933,7 +931,6 @@ async function analyzeScreenWithModel(
 
 	return {
 		summary: parsed.summary,
-		overall_assessment: parsed.overall_assessment || "",
 		issues: dedupeIssues(normalizedIssues),
 	};
 }
@@ -1107,7 +1104,6 @@ app.post("/analyze", async (req, res) => {
 		const currentNodes = compactScreen.nodes || [];
 		const currentNodeIds = new Set(currentNodes.map((node) => node.id));
 
-		let overallAssessment = "AI review completed.";
 		let reusedExactNodeCount = 0;
 		let reusedFamilyVisualCount = 0;
 		let reusedGlobalVisualCount = 0;
@@ -1184,10 +1180,6 @@ app.post("/analyze", async (req, res) => {
 
 		if (nodesNeedingModel.length > 0) {
 			let analysisIssues = [];
-			let analysisSummary = {
-				total_nodes: compactScreen.totalNodes,
-				text_nodes: compactScreen.textNodes,
-			};
 
 			if (nodesNeedingModel.length === currentNodes.length) {
 				const analysis = await analyzeScreenWithModel(
@@ -1198,10 +1190,7 @@ app.post("/analyze", async (req, res) => {
 					deviceType,
 				);
 
-				overallAssessment =
-					analysis.overall_assessment || overallAssessment;
 				analysisIssues = analysis.issues || [];
-				analysisSummary = analysis.summary || analysisSummary;
 			} else {
 				analysisIssues = await analyzeChangedNodesWithModel(
 					nodesNeedingModel,
@@ -1306,7 +1295,6 @@ app.post("/analyze", async (req, res) => {
 				total_nodes: compactScreen.totalNodes,
 				text_nodes: compactScreen.textNodes,
 			},
-			overall_assessment: overallAssessment,
 			issues: finalIssues,
 		});
 	} catch (error) {
