@@ -28,6 +28,19 @@ if (!fs.existsSync(reviewCacheFile)) {
 	fs.writeFileSync(reviewCacheFile, JSON.stringify({}), "utf8");
 }
 
+const CONTEXT_SENSITIVE_ISSUES = new Set(["weak_visual_hierarchy", "other"]);
+
+const VALID_ISSUE_TYPES = new Set([
+	"small_text",
+	"low_contrast",
+	"small_touch_target",
+	"unclear_label",
+	"weak_visual_hierarchy",
+	"other",
+]);
+
+const VALID_SEVERITIES = new Set(["low", "medium", "high"]);
+
 function appendEvent(event) {
 	fs.appendFileSync(eventsFile, JSON.stringify(event) + "\n", "utf8");
 	console.log("WROTE EVENT TO:", eventsFile);
@@ -62,6 +75,10 @@ function stableHash(value) {
 		.digest("hex");
 }
 
+function isIntrinsicIssueType(issueType) {
+	return !CONTEXT_SENSITIVE_ISSUES.has(issueType);
+}
+
 function getUserFileReviewCache(store, userId, fileKey) {
 	if (!store[userId]) store[userId] = {};
 
@@ -69,25 +86,33 @@ function getUserFileReviewCache(store, userId, fileKey) {
 		store[userId][fileKey] = {
 			screens: {},
 			nodeReviews: {},
+			visualReviews: {},
+			resolvedPatterns: {},
 			latestSelectionSignature: null,
+			latestScreenFamilySignature: null,
 		};
 	}
 
-	if (!store[userId][fileKey].screens) {
-		store[userId][fileKey].screens = {};
+	const fileCache = store[userId][fileKey];
+
+	if (!fileCache.screens) fileCache.screens = {};
+	if (!fileCache.nodeReviews) fileCache.nodeReviews = {};
+	if (!fileCache.visualReviews) fileCache.visualReviews = {};
+	if (!fileCache.resolvedPatterns) fileCache.resolvedPatterns = {};
+	if (!("latestSelectionSignature" in fileCache)) {
+		fileCache.latestSelectionSignature = null;
+	}
+	if (!("latestScreenFamilySignature" in fileCache)) {
+		fileCache.latestScreenFamilySignature = null;
 	}
 
-	if (!store[userId][fileKey].nodeReviews) {
-		store[userId][fileKey].nodeReviews = {};
-	}
-
-	return store[userId][fileKey];
+	return fileCache;
 }
 
 function makeCompactScreen(screen) {
 	const nodes = Array.isArray(screen?.nodes) ? screen.nodes : [];
 
-	const compactNodes = nodes.slice(0, 300).map((node) => ({
+	const compactNodes = nodes.slice(0, 400).map((node) => ({
 		id: node.id,
 		name: node.name,
 		type: node.type,
@@ -98,7 +123,7 @@ function makeCompactScreen(screen) {
 		y: node.y,
 		text: node.text,
 		fontSize: typeof node.fontSize === "number" ? node.fontSize : undefined,
-		fills: node.fills,
+		fills: Array.isArray(node.fills) ? node.fills : [],
 		fingerprint: node.fingerprint,
 		visualSignature: node.visualSignature,
 	}));
@@ -194,19 +219,46 @@ function createSelectionSignature(compactScreen, deviceType) {
 	});
 }
 
+function createScreenFamilySignature(compactScreen, deviceType) {
+	const stableNodes = (compactScreen.nodes || [])
+		.map((node) => ({
+			type: node.type,
+			name: node.name || "",
+			visible: node.visible,
+			widthBucket:
+				typeof node.width === "number"
+					? Math.round(node.width / 24)
+					: null,
+			heightBucket:
+				typeof node.height === "number"
+					? Math.round(node.height / 24)
+					: null,
+			xBucket:
+				typeof node.x === "number" ? Math.round(node.x / 64) : null,
+			yBucket:
+				typeof node.y === "number" ? Math.round(node.y / 64) : null,
+			textBucket:
+				typeof node.text === "string" && node.text.length > 0
+					? node.text.slice(0, 50)
+					: "",
+			fontSizeBucket:
+				typeof node.fontSize === "number"
+					? Math.round(node.fontSize / 2)
+					: null,
+		}))
+		.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+	return stableHash({
+		deviceType,
+		selectionCount: compactScreen.selectionCount,
+		totalNodes: compactScreen.totalNodes,
+		textNodes: compactScreen.textNodes,
+		nodes: stableNodes,
+	});
+}
+
 function normalizeIssue(issue, nodeIndex) {
 	if (!issue || typeof issue !== "object") return null;
-
-	const validIssueTypes = new Set([
-		"small_text",
-		"low_contrast",
-		"small_touch_target",
-		"unclear_label",
-		"weak_visual_hierarchy",
-		"other",
-	]);
-
-	const validSeverities = new Set(["low", "medium", "high"]);
 
 	const nodeId = typeof issue.node_id === "string" ? issue.node_id : "";
 	const node = nodeIndex.get(nodeId);
@@ -215,11 +267,11 @@ function normalizeIssue(issue, nodeIndex) {
 		return null;
 	}
 
-	const issueType = validIssueTypes.has(issue.issue_type)
+	const issueType = VALID_ISSUE_TYPES.has(issue.issue_type)
 		? issue.issue_type
 		: "other";
 
-	const severity = validSeverities.has(issue.severity)
+	const severity = VALID_SEVERITIES.has(issue.severity)
 		? issue.severity
 		: "medium";
 
@@ -245,6 +297,8 @@ function dedupeIssues(issues) {
 	const bestByKey = new Map();
 
 	for (const issue of issues) {
+		if (!issue?.issue_type || !issue?.node_id) continue;
+
 		const key = `${issue.issue_type}|${issue.node_id}`;
 		const existing = bestByKey.get(key);
 
@@ -281,6 +335,204 @@ function dedupeIssues(issues) {
 	return Array.from(bestByKey.values()).sort(
 		(a, b) => severityRank(b.severity) - severityRank(a.severity),
 	);
+}
+
+function groupIssuesByNodeId(issues) {
+	const byNodeId = new Map();
+
+	for (const issue of issues || []) {
+		if (!issue?.node_id) continue;
+
+		if (!byNodeId.has(issue.node_id)) {
+			byNodeId.set(issue.node_id, []);
+		}
+
+		byNodeId.get(issue.node_id).push(issue);
+	}
+
+	return byNodeId;
+}
+
+function cloneIssuesForNode(issues, node) {
+	return dedupeIssues(
+		(issues || []).map((issue) => ({
+			...issue,
+			node_id: node.id,
+			node_name: node.name,
+		})),
+	);
+}
+
+function buildFamilyVisualKey(deviceType, familySignature, visualSignature) {
+	return `family|${deviceType}|${familySignature}|${visualSignature}`;
+}
+
+function buildGlobalVisualKey(deviceType, visualSignature) {
+	return `global|${deviceType}|${visualSignature}`;
+}
+
+function buildResolvedPatternKey(
+	deviceType,
+	familySignature,
+	issueType,
+	visualSignature,
+) {
+	return `${deviceType}|${familySignature}|${issueType}|${visualSignature}`;
+}
+
+function filterIssuesByResolvedPatterns({
+	issues,
+	currentNodes,
+	nodeIndex,
+	resolvedPatterns,
+	deviceType,
+	familySignature,
+}) {
+	const finalIssues = [];
+
+	for (const issue of issues || []) {
+		const node = nodeIndex.get(issue.node_id);
+		if (!node) continue;
+
+		const visualSignature = getNodeVisualSignature(node);
+		const resolvedKey = buildResolvedPatternKey(
+			deviceType,
+			familySignature,
+			issue.issue_type,
+			visualSignature,
+		);
+
+		if (resolvedPatterns[resolvedKey]) {
+			continue;
+		}
+
+		finalIssues.push(issue);
+	}
+
+	return dedupeIssues(finalIssues);
+}
+
+function materializeIssuesFromNodeReviews({
+	nodeReviews,
+	currentNodes,
+	nodeIndex,
+	resolvedPatterns,
+	deviceType,
+	familySignature,
+}) {
+	const issues = [];
+
+	for (const node of currentNodes) {
+		const stored = nodeReviews[node.id];
+		if (!stored) continue;
+
+		const currentFingerprint = getNodeFingerprintFromIndex(
+			nodeIndex,
+			node.id,
+		);
+		if (!currentFingerprint) continue;
+
+		if (stored.fingerprint !== currentFingerprint) {
+			continue;
+		}
+
+		for (const issue of stored.issues || []) {
+			issues.push({
+				...issue,
+				node_id: node.id,
+				node_name: node.name,
+				node_fingerprint: currentFingerprint,
+			});
+		}
+	}
+
+	return filterIssuesByResolvedPatterns({
+		issues: dedupeIssues(issues),
+		currentNodes,
+		nodeIndex,
+		resolvedPatterns,
+		deviceType,
+		familySignature,
+	});
+}
+
+function updateVisualReviewIndexes({
+	fileCache,
+	node,
+	issues,
+	deviceType,
+	familySignature,
+}) {
+	const visualSignature = getNodeVisualSignature(node);
+	if (!visualSignature) return;
+
+	const familyKey = buildFamilyVisualKey(
+		deviceType,
+		familySignature,
+		visualSignature,
+	);
+
+	fileCache.visualReviews[familyKey] = {
+		scope: "family",
+		deviceType,
+		familySignature,
+		visualSignature,
+		issues: dedupeIssues(cloneIssuesForNode(issues, node)),
+		lastReviewedAt: new Date().toISOString(),
+	};
+
+	const intrinsicIssues = cloneIssuesForNode(
+		(issues || []).filter((issue) =>
+			isIntrinsicIssueType(issue.issue_type),
+		),
+		node,
+	);
+
+	const globalKey = buildGlobalVisualKey(deviceType, visualSignature);
+
+	fileCache.visualReviews[globalKey] = {
+		scope: "global_intrinsic",
+		deviceType,
+		visualSignature,
+		issues: dedupeIssues(intrinsicIssues),
+		lastReviewedAt: new Date().toISOString(),
+	};
+}
+
+function getReusableIssuesForNode({
+	fileCache,
+	node,
+	deviceType,
+	familySignature,
+}) {
+	const visualSignature = getNodeVisualSignature(node);
+	if (!visualSignature) return null;
+
+	const familyKey = buildFamilyVisualKey(
+		deviceType,
+		familySignature,
+		visualSignature,
+	);
+	const familyReview = fileCache.visualReviews[familyKey];
+
+	if (familyReview && Array.isArray(familyReview.issues)) {
+		return {
+			source: "family_visual_match",
+			issues: cloneIssuesForNode(familyReview.issues, node),
+		};
+	}
+
+	const globalKey = buildGlobalVisualKey(deviceType, visualSignature);
+	const globalReview = fileCache.visualReviews[globalKey];
+
+	if (globalReview && Array.isArray(globalReview.issues)) {
+		return {
+			source: "global_intrinsic_visual_match",
+			issues: cloneIssuesForNode(globalReview.issues, node),
+		};
+	}
+
+	return null;
 }
 
 function buildInitialReviewPrompt(
@@ -328,7 +580,7 @@ Rules:
 - node_id must exactly match a node id from the provided data.
 - node_name must exactly match that node's name.
 - Do not report duplicate issue types for the same node.
-- Return at most 8 strong, clearly evidenced issues.
+- Return only strong, clearly evidenced issues.
 - Prefer fewer, better-supported issues over many weak ones.
 - If there are no clear issues, return an empty issues array.
 - Use cautious wording when evidence is incomplete.
@@ -450,7 +702,7 @@ Device context:
 - This prototype should be reviewed as a ${deviceType} interface.
 
 Image note:
-- ${hasSelectionImage ? "A rendered preview image is included." : "No preview image is included."}
+- ${hasSelectionImage ? "A rendered preview image is included." : "No rendered image is included."}
 
 Node data:
 ${JSON.stringify(node, null, 2)}
@@ -780,56 +1032,6 @@ async function recheckSingleIssueWithModel({
 	return normalized;
 }
 
-function groupIssuesByNodeId(issues) {
-	const byNodeId = new Map();
-
-	for (const issue of issues || []) {
-		if (!issue?.node_id) continue;
-
-		if (!byNodeId.has(issue.node_id)) {
-			byNodeId.set(issue.node_id, []);
-		}
-
-		byNodeId.get(issue.node_id).push(issue);
-	}
-
-	return byNodeId;
-}
-
-function materializeIssuesFromNodeReviews(
-	nodeReviews,
-	currentNodes,
-	nodeIndex,
-) {
-	const issues = [];
-
-	for (const node of currentNodes) {
-		const stored = nodeReviews[node.id];
-		if (!stored) continue;
-
-		const currentFingerprint = getNodeFingerprintFromIndex(
-			nodeIndex,
-			node.id,
-		);
-		if (!currentFingerprint) continue;
-
-		if (stored.fingerprint !== currentFingerprint) {
-			continue;
-		}
-
-		for (const issue of stored.issues || []) {
-			issues.push({
-				...issue,
-				node_id: node.id,
-				node_name: node.name,
-				node_fingerprint: currentFingerprint,
-			});
-		}
-	}
-
-	return dedupeIssues(issues);
-}
-
 const app = express();
 const port = process.env.PORT || 3001;
 
@@ -865,6 +1067,15 @@ app.post("/analyze", async (req, res) => {
 			req.body?.meta?.fileKey ||
 			"unknown-file";
 
+		const selectionSignature = createSelectionSignature(
+			compactScreen,
+			deviceType,
+		);
+		const familySignature = createScreenFamilySignature(
+			compactScreen,
+			deviceType,
+		);
+
 		appendEvent({
 			userId,
 			sessionId,
@@ -876,6 +1087,8 @@ app.post("/analyze", async (req, res) => {
 			selectionCount: compactScreen.selectionCount,
 			totalNodes: compactScreen.totalNodes,
 			textNodes: compactScreen.textNodes,
+			selectionSignature,
+			familySignature,
 			hasSelectionImage:
 				typeof selectionImage?.imageBase64 === "string" &&
 				selectionImage.imageBase64.length > 0,
@@ -889,121 +1102,167 @@ app.post("/analyze", async (req, res) => {
 			fileKey,
 		);
 
-		const selectionSignature = createSelectionSignature(
-			compactScreen,
-			deviceType,
-		);
-
 		const nodeReviews = fileCache.nodeReviews || {};
+		const resolvedPatterns = fileCache.resolvedPatterns || {};
 		const currentNodes = compactScreen.nodes || [];
 		const currentNodeIds = new Set(currentNodes.map((node) => node.id));
 
-		const existingNodeReviewCount = Object.keys(nodeReviews).length;
-		const isFirstReview = existingNodeReviewCount === 0;
-
 		let overallAssessment = "AI review completed.";
-		let reusedNodeCount = 0;
+		let reusedExactNodeCount = 0;
+		let reusedFamilyVisualCount = 0;
+		let reusedGlobalVisualCount = 0;
 		let changedNodeCount = 0;
 		let newNodeCount = 0;
 		let removedNodeCount = 0;
 
-		if (isFirstReview) {
-			const analysis = await analyzeScreenWithModel(
-				compactScreen,
-				nodeIndex,
-				client,
-				selectionImage,
+		const nodesNeedingModel = [];
+
+		for (const node of currentNodes) {
+			const fingerprint = getNodeFingerprintFromIndex(nodeIndex, node.id);
+			if (!fingerprint) continue;
+
+			const visualSignature = getNodeVisualSignature(node);
+			const existing = nodeReviews[node.id];
+
+			if (existing && existing.fingerprint === fingerprint) {
+				reusedExactNodeCount += 1;
+				existing.nodeName = node.name || "";
+				existing.visualSignature = visualSignature;
+				continue;
+			}
+
+			const reusable = getReusableIssuesForNode({
+				fileCache,
+				node,
 				deviceType,
-			);
+				familySignature,
+			});
 
-			overallAssessment =
-				analysis.overall_assessment || overallAssessment;
-
-			const issuesByNodeId = groupIssuesByNodeId(analysis.issues);
-
-			for (const node of currentNodes) {
-				const fingerprint = getNodeFingerprintFromIndex(
-					nodeIndex,
-					node.id,
-				);
-				if (!fingerprint) continue;
+			if (reusable) {
+				if (reusable.source === "family_visual_match") {
+					reusedFamilyVisualCount += 1;
+				} else if (
+					reusable.source === "global_intrinsic_visual_match"
+				) {
+					reusedGlobalVisualCount += 1;
+				}
 
 				nodeReviews[node.id] = {
 					nodeId: node.id,
 					nodeName: node.name || "",
 					fingerprint,
-					issues: dedupeIssues(issuesByNodeId.get(node.id) || []),
+					visualSignature,
+					issues: dedupeIssues(reusable.issues),
 					lastReviewedAt: new Date().toISOString(),
+					reviewSource: reusable.source,
 				};
+
+				continue;
 			}
 
-			newNodeCount = currentNodes.length;
-		} else {
-			const changedOrNewNodes = [];
-
-			for (const node of currentNodes) {
-				const fingerprint = getNodeFingerprintFromIndex(
-					nodeIndex,
-					node.id,
-				);
-				if (!fingerprint) continue;
-
-				const existing = nodeReviews[node.id];
-
-				if (!existing) {
-					newNodeCount += 1;
-					changedOrNewNodes.push(node);
-					continue;
-				}
-
-				if (existing.fingerprint === fingerprint) {
-					reusedNodeCount += 1;
-					existing.nodeName = node.name || "";
-					continue;
-				}
-
+			if (!existing) {
+				newNodeCount += 1;
+			} else {
 				changedNodeCount += 1;
-				changedOrNewNodes.push(node);
 			}
 
-			for (const storedNodeId of Object.keys(nodeReviews)) {
-				if (!currentNodeIds.has(storedNodeId)) {
-					delete nodeReviews[storedNodeId];
-					removedNodeCount += 1;
-				}
-			}
+			nodesNeedingModel.push(node);
+		}
 
-			const changedIssues = await analyzeChangedNodesWithModel(
-				changedOrNewNodes,
-				nodeIndex,
-				client,
-				deviceType,
-			);
-
-			const changedIssuesByNodeId = groupIssuesByNodeId(changedIssues);
-
-			for (const node of changedOrNewNodes) {
-				const fingerprint = getNodeFingerprintFromIndex(
-					nodeIndex,
-					node.id,
-				);
-				if (!fingerprint) continue;
-
-				nodeReviews[node.id] = {
-					nodeId: node.id,
-					nodeName: node.name || "",
-					fingerprint,
-					issues: dedupeIssues(
-						changedIssuesByNodeId.get(node.id) || [],
-					),
-					lastReviewedAt: new Date().toISOString(),
-				};
+		for (const storedNodeId of Object.keys(nodeReviews)) {
+			if (!currentNodeIds.has(storedNodeId)) {
+				delete nodeReviews[storedNodeId];
+				removedNodeCount += 1;
 			}
 		}
 
+		const isFirstReview =
+			reusedExactNodeCount === 0 &&
+			reusedFamilyVisualCount === 0 &&
+			reusedGlobalVisualCount === 0 &&
+			nodesNeedingModel.length === currentNodes.length;
+
+		if (nodesNeedingModel.length > 0) {
+			let analysisIssues = [];
+			let analysisSummary = {
+				total_nodes: compactScreen.totalNodes,
+				text_nodes: compactScreen.textNodes,
+			};
+
+			if (nodesNeedingModel.length === currentNodes.length) {
+				const analysis = await analyzeScreenWithModel(
+					compactScreen,
+					nodeIndex,
+					client,
+					selectionImage,
+					deviceType,
+				);
+
+				overallAssessment =
+					analysis.overall_assessment || overallAssessment;
+				analysisIssues = analysis.issues || [];
+				analysisSummary = analysis.summary || analysisSummary;
+			} else {
+				analysisIssues = await analyzeChangedNodesWithModel(
+					nodesNeedingModel,
+					nodeIndex,
+					client,
+					deviceType,
+				);
+			}
+
+			const issuesByNodeId = groupIssuesByNodeId(analysisIssues);
+
+			for (const node of nodesNeedingModel) {
+				const fingerprint = getNodeFingerprintFromIndex(
+					nodeIndex,
+					node.id,
+				);
+				if (!fingerprint) continue;
+
+				const visualSignature = getNodeVisualSignature(node);
+				const nodeIssues = dedupeIssues(
+					issuesByNodeId.get(node.id) || [],
+				);
+
+				nodeReviews[node.id] = {
+					nodeId: node.id,
+					nodeName: node.name || "",
+					fingerprint,
+					visualSignature,
+					issues: nodeIssues,
+					lastReviewedAt: new Date().toISOString(),
+					reviewSource: "model",
+				};
+
+				updateVisualReviewIndexes({
+					fileCache,
+					node,
+					issues: nodeIssues,
+					deviceType,
+					familySignature,
+				});
+			}
+		}
+
+		for (const node of currentNodes) {
+			const stored = nodeReviews[node.id];
+			if (!stored) continue;
+
+			updateVisualReviewIndexes({
+				fileCache,
+				node,
+				issues: stored.issues || [],
+				deviceType,
+				familySignature,
+			});
+		}
+
 		fileCache.latestSelectionSignature = selectionSignature;
+		fileCache.latestScreenFamilySignature = familySignature;
 		fileCache.screens[selectionSignature] = {
 			selectionSignature,
+			familySignature,
 			deviceType,
 			nodeIds: currentNodes.map((node) => node.id),
 			reviewedAt: new Date().toISOString(),
@@ -1011,11 +1270,14 @@ app.post("/analyze", async (req, res) => {
 
 		writeReviewCache(reviewCacheStore);
 
-		const finalIssues = materializeIssuesFromNodeReviews(
+		const finalIssues = materializeIssuesFromNodeReviews({
 			nodeReviews,
 			currentNodes,
 			nodeIndex,
-		);
+			resolvedPatterns,
+			deviceType,
+			familySignature,
+		});
 
 		appendEvent({
 			userId,
@@ -1024,13 +1286,17 @@ app.post("/analyze", async (req, res) => {
 			demandMode,
 			deviceType,
 			fileKey,
-			eventType: "check_completed_incremental",
+			eventType: "check_completed_incremental_family_aware",
 			selectionSignature,
+			familySignature,
 			isFirstReview,
-			reusedNodeCount,
+			reusedExactNodeCount,
+			reusedFamilyVisualCount,
+			reusedGlobalVisualCount,
 			changedNodeCount,
 			newNodeCount,
 			removedNodeCount,
+			modelReviewedNodeCount: nodesNeedingModel.length,
 			finalIssueCount: finalIssues.length,
 			timestamp: new Date().toISOString(),
 		});
@@ -1133,10 +1399,32 @@ app.post("/resolve-issue", (req, res) => {
 			});
 		}
 
+		const familySignature =
+			fileCache.latestScreenFamilySignature || "unknown-family";
+		const visualSignature = nodeReview.visualSignature || null;
+
 		nodeReview.issues = (nodeReview.issues || []).filter(
 			(item) => item.issue_type !== issue.issue_type,
 		);
 		nodeReview.lastReviewedAt = new Date().toISOString();
+
+		if (visualSignature) {
+			const resolvedKey = buildResolvedPatternKey(
+				deviceType,
+				familySignature,
+				issue.issue_type,
+				visualSignature,
+			);
+
+			fileCache.resolvedPatterns[resolvedKey] = {
+				deviceType,
+				familySignature,
+				issueType: issue.issue_type,
+				visualSignature,
+				resolvedAt: new Date().toISOString(),
+				nodeName: nodeReview.nodeName || issue.node_name || "",
+			};
+		}
 
 		writeReviewCache(reviewCacheStore);
 
@@ -1147,10 +1435,12 @@ app.post("/resolve-issue", (req, res) => {
 			demandMode,
 			deviceType,
 			fileKey,
-			eventType: "issue_resolved",
+			eventType: "issue_resolved_family_aware",
 			nodeId: issue.node_id,
 			nodeName: issue.node_name || "",
 			issueType: issue.issue_type,
+			familySignature,
+			hasVisualSignature: !!visualSignature,
 			timestamp: new Date().toISOString(),
 		});
 
@@ -1187,6 +1477,10 @@ app.post("/recheck-issue", async (req, res) => {
 		const selectionImage =
 			req.body.nodeImage || req.body.selectionImage || null;
 		const nodeIndex = buildNodeIndex(compactScreen);
+		const familySignature = createScreenFamilySignature(
+			compactScreen,
+			deviceType,
+		);
 
 		if (!issue || !issue.issue_type || !issue.node_id) {
 			return res.status(400).json({
@@ -1212,6 +1506,8 @@ app.post("/recheck-issue", async (req, res) => {
 			});
 		}
 
+		const visualSignature = getNodeVisualSignature(node);
+
 		const refreshedIssue = await recheckSingleIssueWithModel({
 			node,
 			issueType: issue.issue_type,
@@ -1232,6 +1528,7 @@ app.post("/recheck-issue", async (req, res) => {
 				nodeId: node.id,
 				nodeName: node.name || "",
 				fingerprint,
+				visualSignature,
 				issues: [],
 				lastReviewedAt: new Date().toISOString(),
 			};
@@ -1240,6 +1537,7 @@ app.post("/recheck-issue", async (req, res) => {
 		const nodeReview = fileCache.nodeReviews[issue.node_id];
 		nodeReview.nodeName = node.name || "";
 		nodeReview.fingerprint = fingerprint;
+		nodeReview.visualSignature = visualSignature;
 		nodeReview.lastReviewedAt = new Date().toISOString();
 
 		const keptIssues = (nodeReview.issues || []).filter(
@@ -1248,9 +1546,26 @@ app.post("/recheck-issue", async (req, res) => {
 
 		if (refreshedIssue) {
 			keptIssues.push(refreshedIssue);
+
+			const resolvedKey = buildResolvedPatternKey(
+				deviceType,
+				familySignature,
+				issue.issue_type,
+				visualSignature,
+			);
+
+			delete fileCache.resolvedPatterns[resolvedKey];
 		}
 
 		nodeReview.issues = dedupeIssues(keptIssues);
+
+		updateVisualReviewIndexes({
+			fileCache,
+			node,
+			issues: nodeReview.issues,
+			deviceType,
+			familySignature,
+		});
 
 		writeReviewCache(reviewCacheStore);
 
@@ -1261,12 +1576,13 @@ app.post("/recheck-issue", async (req, res) => {
 			demandMode,
 			deviceType,
 			fileKey,
-			eventType: "issue_rechecked",
+			eventType: "issue_rechecked_family_aware",
 			issueType: issue.issue_type,
 			nodeId: issue.node_id,
 			nodeName: issue.node_name || node.name || "",
 			stillPresent: !!refreshedIssue,
 			fingerprint,
+			familySignature,
 			timestamp: new Date().toISOString(),
 		});
 
@@ -1318,8 +1634,11 @@ app.post("/reset-dismissed-issues", (req, res) => {
 		);
 
 		fileCache.nodeReviews = {};
+		fileCache.visualReviews = {};
+		fileCache.resolvedPatterns = {};
 		fileCache.screens = {};
 		fileCache.latestSelectionSignature = null;
+		fileCache.latestScreenFamilySignature = null;
 
 		writeReviewCache(reviewCacheStore);
 
